@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rubbish Collection Server</title>
+    <link rel="stylesheet" href="style.css?v=5">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <style>
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 100;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content {
+            background-color: var(--card-bg);
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 90%;
+            max-width: 400px;
+            border-radius: 8px;
+        }
+
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="add-device-modal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeModal()">&times;</span>
+            <h2>Add Device</h2>
+            <div id="reader" style="width: 100%"></div>
+
+            <div class="form-group">
+                <label>Manual MAC Address</label>
+                <input type="text" id="manual-mac" placeholder="XX:XX:XX:XX:XX:XX">
+                <p style="font-size:0.8rem; color:#888;">Enter MAC with colons, or scan Code 128</p>
+            </div>
+            <button onclick="addManualDevice()" class="primary">Add Device</button>
+            <button onclick="startCamera()" style="margin-top:10px;">Scan Camera</button>
+            <button onclick="stopCamera()" style="margin-top:10px; display:none;" id="stop-cam-btn">Stop Camera</button>
+        </div>
+    </div>
+    <div class="app-container">
+        <header>
+            <h1>Rubbish Collection</h1>
+            <div class="status-badge" id="wifi-status">Checking WiFi...</div>
+        </header>
+
+        <main>
+            <!-- Setup Section -->
+            <section id="setup-section" class="card">
+                <h2>Configuration</h2>
+                <div class="form-group">
+                    <label>Postcode</label>
+                    <div class="input-group">
+                        <input type="text" id="postcode" placeholder="W5 3JS">
+                        <button onclick="searchAddress()">Search</button>
+                    </div>
+                </div>
+
+                <div class="form-group" id="address-select-group" style="display:none;">
+                    <label>Select Address</label>
+                    <select id="address-select"></select>
+                    <button onclick="saveAddress()" class="primary">Save Address</button>
+                </div>
+
+                <div class="current-config">
+                    <p>Current UPRN: <span id="current-uprn">Loading...</span></p>
+                </div>
+            </section>
+
+            <!-- Dashboard Section -->
+            <section id="dashboard-section" class="card">
+                <h2>Next Collection</h2>
+                <div id="collection-preview">
+                    <p style="text-align:center; color:#666;">Loading schedule...</p>
+                </div>
+                <button onclick="refreshData()">Force Refresh</button>
+            </section>
+
+            <!-- SVG Definitions -->
+            <svg style="display: none;">
+                <symbol id="icon-bin" viewBox="0 0 24 24">
+                    <path
+                        d="M19 6h-3.5l-1-1h-5l-1 1H5v2h14V6zm1 3H4v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V9zm-8 10H8v-8h4v8zm4 0h-4v-8h4v8z"
+                        fill="currentColor" />
+                </symbol>
+            </svg>
+
+            <!-- Devices Section -->
+            <section id="devices-section" class="card">
+                <h2>E-Ink Displays</h2>
+                <div class="device-list" id="device-list">
+                    <!-- Devices injected here -->
+                    <div class="device-item">
+                        <span>Scanning for devices...</span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <button onclick="openModal()">Add Device</button>
+                    <!-- <button onclick="sendTestImage()">Send Test Image</button> -->
+                </div>
+            </section>
+        </main>
+
+        <footer style="text-align:center; padding: 20px; color: #666; font-size: 0.8rem;">
+            <p>Firmware Built: <span id="fw-version">Loading...</span></p>
+        </footer>
+    </div>
+    <script src="app.js?v=5"></script>
+</body>
+
+</html>
