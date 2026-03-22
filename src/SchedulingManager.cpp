@@ -1,72 +1,393 @@
 #include "SchedulingManager.h"
 #include <time.h>
 
-// Remove simple malloc from constructor, move to init
-SchedulingManager::SchedulingManager(CouncilClient* api, ZhsunycoMaster* ble, ConfigManager* config, LGFX* display) 
+SchedulingManager::SchedulingManager(CouncilClient* api, ZhsunycoMaster* ble, ConfigManager* config, LGFX* display)
     : _api(api), _ble(ble), _config(config), _display(display) {
+    _mutex = xSemaphoreCreateMutex();
 }
 
+// --- Thread-safe request methods (called from async web handlers) ---
+
+void SchedulingManager::requestForceUpdate() {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _forceUpdateRequested = true;
+    xSemaphoreGive(_mutex);
+}
+
+void SchedulingManager::requestTestPattern(String mac) {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _testPatternRequestMac = mac;
+    xSemaphoreGive(_mutex);
+}
+
+void SchedulingManager::requestTriggerDevice(String mac) {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _pendingTriggerMacs.push_back(mac);
+    xSemaphoreGive(_mutex);
+}
+
+void SchedulingManager::requestRemoveDevice(String mac) {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _pendingRemoveMacs.push_back(mac);
+    xSemaphoreGive(_mutex);
+}
+
+// --- Thread-safe data accessors (called from async web handlers) ---
+
+JsonDocument SchedulingManager::getLastSchedule() {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    JsonDocument copy = _lastData;
+    xSemaphoreGive(_mutex);
+    return copy;
+}
+
+time_t SchedulingManager::getLastUpdateEpoch() {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    time_t val = _lastUpdateEpoch;
+    xSemaphoreGive(_mutex);
+    return val;
+}
+
+time_t SchedulingManager::getNextScheduledEpoch() {
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        return 0;
+    }
+
+    // Boundaries at :05 past every 6 hours: 00:05, 06:05, 12:05, 18:05
+    const int boundaries[] = {5, 365, 725, 1085}; // in minutes from midnight
+    int currentMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+
+    for (int i = 0; i < 4; i++) {
+        if (currentMinutes < boundaries[i]) {
+            struct tm nextTm = timeinfo;
+            nextTm.tm_hour = boundaries[i] / 60;
+            nextTm.tm_min = boundaries[i] % 60;
+            nextTm.tm_sec = 0;
+            return mktime(&nextTm);
+        }
+    }
+
+    // Past 18:05 - next boundary is 00:05 tomorrow
+    struct tm nextTm = timeinfo;
+    nextTm.tm_mday += 1;
+    nextTm.tm_hour = 0;
+    nextTm.tm_min = 5;
+    nextTm.tm_sec = 0;
+    return mktime(&nextTm);
+}
+
+String SchedulingManager::getDeviceStatusJson() {
+    String configJson = _config->getDevicesJson();
+    JsonDocument doc;
+    deserializeJson(doc, configJson);
+    JsonArray configured = doc.as<JsonArray>();
+
+    JsonDocument outDoc;
+    JsonArray outArr = outDoc.to<JsonArray>();
+
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    for (JsonVariant v : configured) {
+        String mac = v.as<String>();
+        JsonObject obj = outArr.add<JsonObject>();
+        obj["mac"] = mac;
+        obj["rotate"] = _config->getDeviceRotation(mac);
+
+        if (_deviceStatuses.count(mac)) {
+            DeviceStatus& s = _deviceStatuses[mac];
+            obj["lastSuccess"] = s.lastSuccess;
+            obj["lastAttempt"] = s.lastAttempt;
+            obj["lastSeen"] = s.lastSeen;
+            obj["result"] = s.lastResult;
+            obj["pending"] = s.pendingUpdate;
+            obj["retries"] = s.retryCount;
+        } else {
+            obj["lastSuccess"] = 0;
+            obj["lastAttempt"] = 0;
+            obj["lastSeen"] = 0;
+            obj["result"] = false;
+            obj["pending"] = false;
+        }
+    }
+    xSemaphoreGive(_mutex);
+
+    String out;
+    serializeJson(outDoc, out);
+    return out;
+}
+
+// --- Internal: periodic BLE scan to track device visibility ---
+
+void SchedulingManager::_scanForDevices() {
+    Serial.println("BLE: Scanning for registered devices (15s)...");
+    std::vector<String> found = _ble->scanTags(15);
+
+    String configJson = _config->getDevicesJson();
+    JsonDocument doc;
+    deserializeJson(doc, configJson);
+
+    time_t now = time(nullptr);
+
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    for (const String& foundMac : found) {
+        for (JsonVariant v : doc.as<JsonArray>()) {
+            String registered = v.as<String>();
+            if (registered.equalsIgnoreCase(foundMac)) {
+                _deviceStatuses[registered].lastSeen = now;
+                Serial.printf("BLE: Seen %s\n", registered.c_str());
+                break;
+            }
+        }
+    }
+    xSemaphoreGive(_mutex);
+    Serial.printf("BLE: Scan complete, found %d tag(s)\n", found.size());
+}
+
+// --- Main loop (runs exclusively on the Arduino loop task) ---
+
 void SchedulingManager::loop() {
-    if (millis() - _lastUpdate > _interval || _lastUpdate == 0) {
+    time_t now = time(nullptr);
+
+    // 0. Periodic device visibility scan (every 3 minutes)
+    static unsigned long lastScanMillis = 0;
+    if (millis() - lastScanMillis > 180000) {
+        lastScanMillis = millis();
+        _scanForDevices();
+    }
+
+    // 1. Consume request flags (under mutex)
+    bool doForce = false;
+    String testMac = "";
+    std::vector<String> triggers;
+    std::vector<String> removes;
+
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    doForce = _forceUpdateRequested;
+    _forceUpdateRequested = false;
+    testMac = _testPatternRequestMac;
+    _testPatternRequestMac = "";
+    triggers.swap(_pendingTriggerMacs);
+    removes.swap(_pendingRemoveMacs);
+    xSemaphoreGive(_mutex);
+
+    // 2. Apply queued state changes (under mutex)
+    if (!removes.empty() || !triggers.empty() || doForce) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        for (auto& mac : removes) {
+            _deviceStatuses.erase(mac);
+        }
+        for (auto& mac : triggers) {
+            _deviceStatuses[mac].pendingUpdate = true;
+            _deviceStatuses[mac].retryCount = 0;
+            _deviceStatuses[mac].nextRetryTime = 0;
+        }
+        if (doForce) {
+            String cj = _config->getDevicesJson();
+            JsonDocument dd;
+            deserializeJson(dd, cj);
+            for (JsonVariant v : dd.as<JsonArray>()) {
+                String mac = v.as<String>();
+                _deviceStatuses[mac].pendingUpdate = true;
+                _deviceStatuses[mac].retryCount = 0;
+                _deviceStatuses[mac].nextRetryTime = 0;
+            }
+        }
+        xSemaphoreGive(_mutex);
+    }
+
+    // 3. Test pattern request (blocking BLE, runs on main loop task)
+    if (testMac.length() > 0) {
+        _sendTestPattern(testMac);
+    }
+
+    // 4. Boot check
+    static bool _hasBooted = false;
+    bool shouldFetch = doForce;
+    if (!_hasBooted && millis() > 5000) {
+        _hasBooted = true;
+        shouldFetch = true;
+        Serial.println("Boot-up Update Triggered");
+    }
+
+    // 4b. Day-change detection: re-render displays when the date changes
+    //     (TODAY/TOMORROW/COLLECTION DAY text depends on current date)
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        int currentDay = timeinfo.tm_yday + timeinfo.tm_year * 366;
+        if (_lastDisplayDay != -1 && _lastDisplayDay != currentDay) {
+            Serial.println("Day changed - queueing display refresh for all devices");
+            xSemaphoreTake(_mutex, portMAX_DELAY);
+            String cj = _config->getDevicesJson();
+            JsonDocument dd;
+            deserializeJson(dd, cj);
+            for (JsonVariant v : dd.as<JsonArray>()) {
+                String mac = v.as<String>();
+                _deviceStatuses[mac].pendingUpdate = true;
+                _deviceStatuses[mac].retryCount = 0;
+                _deviceStatuses[mac].nextRetryTime = 0;
+            }
+            xSemaphoreGive(_mutex);
+        }
+        _lastDisplayDay = currentDay;
+    }
+
+    // 5. Scheduled checks (Local Time Europe/London handled by ESP32 config)
+    if (!shouldFetch && getLocalTime(&timeinfo)) {
+        // Triggers: 00:05, 06:05, 12:05, 18:05
+        static int lastTriggerDay = -1;
+        static int lastTriggerHour = -1;
+
+        if (timeinfo.tm_min == 5 &&
+           (timeinfo.tm_hour % 6 == 0) &&
+           (lastTriggerHour != timeinfo.tm_hour || lastTriggerDay != timeinfo.tm_mday)) {
+
+            Serial.println("Scheduled Trigger Fired!");
+            lastTriggerHour = timeinfo.tm_hour;
+            lastTriggerDay = timeinfo.tm_mday;
+            shouldFetch = true;
+        }
+    }
+
+    if (shouldFetch) {
         _processUpdate();
-        _lastUpdate = millis();
-        _lastUpdateEpoch = time(nullptr);
+    }
+
+    // 6. Pending queue consumer
+    // Copy _lastData once for all devices
+    JsonDocument dataCopy;
+    bool hasData = false;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    hasData = !_lastData.isNull();
+    if (hasData) dataCopy = _lastData;
+    xSemaphoreGive(_mutex);
+
+    String configJson = _config->getDevicesJson();
+    JsonDocument doc;
+    deserializeJson(doc, configJson);
+    JsonArray configured = doc.as<JsonArray>();
+
+    for (JsonVariant v : configured) {
+        String mac = v.as<String>();
+
+        // Read status under mutex
+        bool isPending = false;
+        time_t retryTime = 0;
+        int retryCount = 0;
+
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        DeviceStatus& status = _deviceStatuses[mac];
+        isPending = status.pendingUpdate;
+        retryTime = status.nextRetryTime;
+        retryCount = status.retryCount;
+        xSemaphoreGive(_mutex);
+
+        if (isPending && now >= retryTime) {
+            if (!hasData) {
+                Serial.printf("No data available for %s, will retry when data arrives.\n", mac.c_str());
+                continue; // Keep pendingUpdate true, skip to next device
+            }
+
+            Serial.printf("Processing Pending Update for %s (Retry %d)\n", mac.c_str(), retryCount);
+            _generateAndSendImage(dataCopy, mac);
+        }
     }
 }
 
-void SchedulingManager::forceUpdate() {
-    _processUpdate();
-    _lastUpdate = millis();
-    _lastUpdateEpoch = time(nullptr);
-}
+// --- Internal methods (called only from loop task) ---
 
 void SchedulingManager::_processUpdate() {
     String uprn = _config->getUPRN();
-    if (uprn.length() == 0) {
-        Serial.println("Skipping update: No UPRN set");
-        return;
-    }
-    
-    Serial.println("Updating Collection Data...");
-    JsonDocument doc = _api->getCollectionData(uprn);
+    if (uprn.length() == 0) return;
 
-    if (!doc["error"].is<String>()) { // Or check if missing
-        _lastData = doc; // Cache it
-        _generateAndSendImage(doc);
+    Serial.println("Fetching Collection Data...");
+    JsonDocument doc = _api->getCollectionData(uprn); // Blocking HTTP, no mutex
+
+    if (!doc["error"].is<String>()) {
+        String newDataStr;
+        serializeJson(doc["param2"], newDataStr);
+
+        // Update shared state under mutex
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        _lastData = doc;
+        _lastUpdateEpoch = time(nullptr);
+
+        String configJson = _config->getDevicesJson();
+        JsonDocument devDoc;
+        deserializeJson(devDoc, configJson);
+
+        for (JsonVariant v : devDoc.as<JsonArray>()) {
+            String mac = v.as<String>();
+            if (_deviceStatuses[mac].lastDataHash != newDataStr) {
+                Serial.printf("Data changed for %s. Queueing update.\n", mac.c_str());
+                _deviceStatuses[mac].pendingUpdate = true;
+                _deviceStatuses[mac].retryCount = 0;
+                _deviceStatuses[mac].nextRetryTime = 0;
+            }
+        }
+        xSemaphoreGive(_mutex);
+
     } else {
         Serial.println("Update failed: " + doc["error"].as<String>());
     }
 }
 
-void SchedulingManager::_generateAndSendImage(JsonDocument& data) {
-    Serial.println("--- GENERATING E-INK IMAGE ---");
-    
-    // Check devices first
-    String deviceJson = _config->getDevicesJson();
-    if (deviceJson == "[]" || deviceJson == "") {
-        Serial.println("ABORT: No Devices Configured to update!");
-        return;
-    }
-    
+void SchedulingManager::_generateAndSendImage(JsonDocument& data, String targetMac) {
+    if (targetMac == "") return;
+
+    Serial.printf("Generating Image for %s...\n", targetMac.c_str());
+
+    // Rotation
+    bool rotate180 = _config->getDeviceRotation(targetMac);
+
+
     // Layout Constants
     const int W = 296;
     const int H = 128;
-    
+
     // Create Sprite
     LGFX_Sprite sprite(_display);
-    sprite.setColorDepth(8); 
+    sprite.setColorDepth(8);
     sprite.createSprite(W, H);
-    
+
     // 1. CLEAR (White)
     sprite.fillSprite(TFT_WHITE);
-    
+
     // 2. PARSE DATA & DATE LOGIC
     JsonArray serviceList = data["param2"].as<JsonArray>();
-    String nextDate = ""; // Raw dd/mm/yyyy
-    
-    if (serviceList.size() > 0) {
-        nextDate = serviceList[0]["collectionDateString"].as<String>();
+    String nextDate = ""; // Raw dd/mm/yyyy — earliest date across all services
+
+    // Helper: extract first date from potentially comma-separated collectionDateString
+    // e.g. "23/03/2026,23/03/2026" -> "23/03/2026"
+    auto firstDate = [](String raw) -> String {
+        raw.trim();
+        int comma = raw.indexOf(',');
+        if (comma > 0) raw = raw.substring(0, comma);
+        raw.trim();
+        return raw;
+    };
+
+    // Debug: dump all services
+    Serial.println("=== Service List ===");
+    for (JsonVariant v : serviceList) {
+        String s = v["Service"].as<String>();
+        String rawDate = v["collectionDateString"].as<String>();
+        String d = firstDate(rawDate);
+        Serial.printf("  Service: [%s] Date: [%s] (raw: [%s])\n", s.c_str(), d.c_str(), rawDate.c_str());
     }
+
+    for (JsonVariant v : serviceList) {
+        String d = firstDate(v["collectionDateString"].as<String>());
+        if (d.length() < 10) continue;
+        if (nextDate.length() == 0) {
+            nextDate = d;
+        } else {
+            // Compare dd/mm/yyyy by converting to yyyymmdd for lexical sort
+            String cur = nextDate.substring(6,10) + nextDate.substring(3,5) + nextDate.substring(0,2);
+            String cand = d.substring(6,10) + d.substring(3,5) + d.substring(0,2);
+            if (cand < cur) nextDate = d;
+        }
+    }
+    Serial.printf("nextDate: [%s]\n", nextDate.c_str());
 
     struct tm timeinfo;
     bool timeKnown = getLocalTime(&timeinfo);
@@ -86,7 +407,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data) {
         nextTm.tm_mday = day;
         nextTm.tm_mon = month - 1;
         nextTm.tm_year = year - 1900;
-        nextTm.tm_isdst = -1; 
+        nextTm.tm_isdst = -1;
         time_t nextEpoch = mktime(&nextTm);
 
         // Normalize Today (remove time)
@@ -95,11 +416,17 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data) {
         time_t todayEpoch = mktime(&todayTm);
 
         double diff = difftime(nextEpoch, todayEpoch);
-        
+
         if (diff >= 0 && diff < 86400) {
+            // Collection day itself
+            headerText = "COLLECTION DAY";
+            isUrgent = false; // Black background
+        } else if (diff >= 86400 && diff < 172800) {
+            // 1 day before collection - put bins out today
             headerText = "TODAY";
             isUrgent = true;
-        } else if (diff >= 86400 && diff < 172800) {
+        } else if (diff >= 172800 && diff < 259200) {
+            // 2 days before collection - put bins out tomorrow
             headerText = "TOMORROW";
             isUrgent = true;
         } else {
@@ -111,43 +438,44 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data) {
         }
     }
 
-    
-    // Collect all services for this date
+
+    // Collect all services for this date in preferred display order
     String servicesLine = "";
-    
-    for(JsonVariant v : serviceList) {
-        String d = v["collectionDateString"].as<String>();
-        String s = v["Service"].as<String>();
-        s.toUpperCase(); // Ensure Uppercase
-        
-        if(d == nextDate) {
-            if (servicesLine.length() > 0) servicesLine += ", ";
-            
-            if (s.indexOf("RUBBISH") >= 0) servicesLine += "RUBBISH";
-            else if (s.indexOf("RECYCLING") >= 0) servicesLine += "RECYCLING";
-            else if (s.indexOf("FOOD") >= 0) servicesLine += "FOOD";
-            else if (s.indexOf("GARDEN") >= 0) servicesLine += "GARDEN";
-            else servicesLine += "OTHER"; 
+    const char* binKeys[] = {"RUBBISH", "RECYCLING", "FOOD", "GARDEN"};
+
+    for (int o = 0; o < 4; o++) {
+        for (JsonVariant v : serviceList) {
+            String d = firstDate(v["collectionDateString"].as<String>());
+            if (d != nextDate) continue;
+            String s = v["Service"].as<String>();
+            s.toUpperCase();
+            if (s.indexOf(binKeys[o]) >= 0) {
+                if (servicesLine.length() > 0) servicesLine += ", ";
+                servicesLine += binKeys[o];
+                Serial.printf("  Matched bin: %s from service: %s\n", binKeys[o], s.c_str());
+                break;
+            }
         }
     }
-    
+    Serial.printf("servicesLine: [%s]\n", servicesLine.c_str());
+
     // --- DESIGN REFINEMENT ---
-    
+
     // 1. SIDE BAR (Time)
     int sideBarW = 26; // Smaller width (was 34)
     sprite.fillRect(0, 0, sideBarW, H, TFT_WHITE);
-    sprite.drawFastVLine(sideBarW, 0, H, TFT_BLACK);   
-    
+    sprite.drawFastVLine(sideBarW, 0, H, TFT_BLACK);
+
     // Rotated Time
     LGFX_Sprite sidebar(_display);
     sidebar.setColorDepth(8);
-    sidebar.createSprite(H, sideBarW); 
+    sidebar.createSprite(H, sideBarW);
     sidebar.fillSprite(TFT_WHITE);
     sidebar.setTextColor(TFT_BLACK);
-    sidebar.setFont(&fonts::FreeSans9pt7b); 
-    sidebar.setTextSize(0.7); // Scale down slightly
+    sidebar.setFont(nullptr);
+    sidebar.setTextSize(1);
     sidebar.setTextDatum(middle_center);
-    
+
     String updateTime = "@ --/--";
     if(timeKnown) {
         char buf[20];
@@ -157,178 +485,200 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data) {
     sidebar.drawString(updateTime, H/2, sideBarW/2 + 2); // Center
     sidebar.pushRotateZoom(&sprite, sideBarW/2, H/2, 90, 1, 1);
     sidebar.deleteSprite();
+    sprite.fillRect(sideBarW + 1, 0, sideBarW, H, TFT_BLACK);
 
     // 2. HEADER (Date)
     int mainX = sideBarW + 1;
     int mainW = W - sideBarW - 1;
     int headerH = 45;
-    
-    uint16_t headerBg = isUrgent ? TFT_RED : TFT_BLACK; 
+
+    uint16_t headerBg = isUrgent ? TFT_RED : TFT_BLACK;
     sprite.fillRect(mainX, 0, mainW, headerH, headerBg);
-    
+
     sprite.setTextColor(TFT_WHITE);
     sprite.setFont(&fonts::FreeSansBold12pt7b);
     sprite.setTextDatum(middle_center);
     sprite.setTextSize(1);
-    
-    sprite.drawString(headerText, mainX + mainW/2, headerH/2 + 2); 
-    
+
+    sprite.drawString(headerText, mainX + mainW/2, headerH/2 + 2);
+
     // 3. MIDDLE (Main Services List)
     int midY = headerH;
     int midH = 50;
     sprite.fillRect(mainX, midY, mainW, midH, TFT_WHITE);
-    
+
     sprite.setTextColor(TFT_BLACK);
-    sprite.setFont(&fonts::FreeSans9pt7b); 
-    
-    // Auto-scale font if too long
-    if (servicesLine.length() > 20) sprite.setTextSize(0.8);
-    else sprite.setTextSize(1);
-    
+    sprite.setFont(&fonts::FreeSansBold9pt7b);
+
+    sprite.setTextSize(1);
+
     sprite.setTextDatum(middle_center);
     sprite.drawString(servicesLine, mainX + mainW/2, midY + midH/2 - 2);
-    
+
     sprite.drawFastHLine(mainX, midY+midH, mainW, TFT_BLACK); // Divider
-    
+
     // 4. BOTTOM (Grid/Footer)
     int botY = midY + midH;
     int botH = H - botY;
     sprite.fillRect(mainX, botY, mainW, botH, TFT_WHITE);
-    
+
     sprite.setFont(nullptr); // Use Default Font for smallest clear text
     sprite.setTextSize(1);
     sprite.setTextColor(TFT_BLACK);
     sprite.setTextDatum(top_left);
-    
+
     // Grid Layout
-    // Col 1: Service (X=10)
-    // Col 2: Date (X=70) e.g. "NEXT" or "28/02"
-    
-    int col1X = mainX + 10;
-    int col2X = mainX + (mainW/2) + 5;
+    int col1X = mainX + 20;
+    int col2X = mainX + (mainW/2) + 30;
     int row1Y = botY + 8;
     int row2Y = botY + 20;
-    
+
     int itemIdx = 0;
-    String foundTypes = "";
-    
-    for(JsonVariant v : serviceList) {
-        String s = v["Service"].as<String>();
-        String d = v["collectionDateString"].as<String>();
-        s.toUpperCase();
-        
-        // Shorten Service Name
-        String shortS = s;
-        if (s.indexOf("RUBBISH") >= 0) shortS = "Rubbish"; // Keep Standard Case or Upper? "Rubbish" looks better small
-        else if (s.indexOf("RECYCLING") >= 0) shortS = "Recycle"; 
-        else if (s.indexOf("FOOD") >= 0) shortS = "Food";
-        else if (s.indexOf("GARDEN") >= 0) shortS = "Garden";
-        else continue; 
-        
-        shortS.toUpperCase(); // USER REQUEST: Uppercase bins
+    const char* gridKeys[] = {"RUBBISH", "RECYCLING", "FOOD", "GARDEN"};
+    const char* gridShort[] = {"RUBBISH", "RECYCLE", "FOOD", "GARDEN"};
 
-        // Check Duplicates
-        if (foundTypes.indexOf(shortS) >= 0) continue;
-        foundTypes += shortS + ",";
-        
-        // Skip current date items (handled in main)
-        if (d == nextDate) continue; 
+    for (int o = 0; o < 4 && itemIdx < 4; o++) {
+        // Find first matching service for this bin type
+        for (JsonVariant v : serviceList) {
+            String s = v["Service"].as<String>();
+            s.toUpperCase();
+            if (s.indexOf(gridKeys[o]) < 0) continue;
 
-        // Calc Position
-        int x = (itemIdx % 2 == 0) ? col1X : col2X;
-        int y = (itemIdx < 2) ? row1Y : row2Y;
-        
-        if(itemIdx >= 4) break; 
-        
-        // Logic for "NEXT"
-        String dateLabel = d.substring(0, 5); // dd/mm
-        
-        if (timeKnown) {
-             // Parse d
-            int day = d.substring(0, 2).toInt();
-            int month = d.substring(3, 5).toInt();
-            int year = d.substring(6, 10).toInt();
-            struct tm dTm = {0};
-            dTm.tm_mday = day; dTm.tm_mon = month - 1; dTm.tm_year = year - 1900; dTm.tm_isdst = -1;
-            time_t dEpoch = mktime(&dTm);
-            
-            struct tm todayTm = timeinfo;
-            todayTm.tm_hour = 0; todayTm.tm_min = 0; todayTm.tm_sec = 0;
-            time_t todayEpoch = mktime(&todayTm);
-            
-            double diff = difftime(dEpoch, todayEpoch);
-            if (diff >= 86400 && diff < 172800) {
-                dateLabel = "NEXT";
+            String d = firstDate(v["collectionDateString"].as<String>());
+
+            // Calc Position
+            int x = (itemIdx % 2 == 0) ? col1X : col2X;
+            int y = (itemIdx < 2) ? row1Y : row2Y;
+
+            // Logic for "NEXT"
+            String dateLabel = d.substring(0, 5); // dd/mm
+            if (d == nextDate) {
+                dateLabel += " *";
             }
+            if (timeKnown) {
+                int day = d.substring(0, 2).toInt();
+                int month = d.substring(3, 5).toInt();
+                int year = d.substring(6, 10).toInt();
+                struct tm dTm = {0};
+                dTm.tm_mday = day; dTm.tm_mon = month - 1; dTm.tm_year = year - 1900; dTm.tm_isdst = -1;
+                time_t dEpoch = mktime(&dTm);
+
+                struct tm todayTm = timeinfo;
+                todayTm.tm_hour = 0; todayTm.tm_min = 0; todayTm.tm_sec = 0;
+                time_t todayEpoch = mktime(&todayTm);
+
+                double diff = difftime(dEpoch, todayEpoch);
+                if (diff >= 86400 && diff < 172800) {
+                    dateLabel = "NEXT";
+                }
+            }
+
+            // Display in Grid: Service ... Date
+            sprite.drawString(gridShort[o], x, y);
+            sprite.drawString(dateLabel, x + 50, y);
+
+            itemIdx++;
+            break; // Only first match per bin type
         }
-        
-        // Display in Grid: Service ... Date
-        sprite.drawString(shortS, x, y);
-        sprite.drawString(dateLabel, x + 50, y); // Offset for date column
-        
-        itemIdx++;
     }
 
-    // EXTRACTION
-    // Black Buffer: Pixels that are NOT White (and NOT Red)
-    // Red Buffer: Pixels that are RED
-    
+    // --- SEND TO BLE ---
+
     int bufSize = W * H;
     uint8_t* bwBuf = (uint8_t*)malloc(bufSize);
     uint8_t* redBuf = (uint8_t*)malloc(bufSize);
-    
-    if(!bwBuf || !redBuf) { free(bwBuf); free(redBuf); return; }
-    
+
+    if(!bwBuf || !redBuf) {
+        Serial.println("FAIL: Malloc Failed (OOM)");
+        if(bwBuf) free(bwBuf);
+        if(redBuf) free(redBuf);
+
+        // Treat as retry-able error
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        _deviceStatuses[targetMac].retryCount++;
+        _deviceStatuses[targetMac].nextRetryTime = time(nullptr) + 60;
+        xSemaphoreGive(_mutex);
+
+        sprite.deleteSprite();
+        return;
+    }
+
     for(int py=0; py<H; py++) {
         for(int px=0; px<W; px++) {
-            uint16_t c = sprite.readPixel(px, py);
-            
+
+            // Rotation Logic
+            int rx = px;
+            int ry = py;
+            if (rotate180) {
+                rx = W - 1 - px;
+                ry = H - 1 - py;
+            }
+
+            uint16_t c = sprite.readPixel(rx, ry);
+
             bool isRed = (c == TFT_RED);
-            
+
             if (isRed) {
                 redBuf[py*W + px] = 1;
-                bwBuf[py*W + px] = 0; 
+                bwBuf[py*W + px] = 0;
             } else {
                 redBuf[py*W + px] = 0;
-                bwBuf[py*W + px] = (c != TFT_WHITE) ? 1 : 0; 
+                bwBuf[py*W + px] = (c != TFT_WHITE) ? 1 : 0;
             }
         }
     }
-    
-    JsonDocument deviceDoc;
-    deserializeJson(deviceDoc, deviceJson);
-    JsonArray devices = deviceDoc.as<JsonArray>();
-    
-    for (JsonVariant v : devices) {
-        String mac = v.as<String>();
-        
-        // Track Attempt
-        _deviceStatuses[mac].lastAttempt = time(nullptr);
-        
-        Serial.print("Updating "); Serial.print(mac); Serial.print(" ... ");
-        bool success = _ble->updateTag(mac, bwBuf, redBuf, W, H);
-        
-        _deviceStatuses[mac].lastResult = success;
-        if(success) _deviceStatuses[mac].lastSuccess = time(nullptr);
-        
-        Serial.println(success ? "OK" : "FAIL");
+
+    Serial.print("Updating "); Serial.print(targetMac); Serial.print(" ... ");
+    bool success = _ble->updateTag(targetMac, bwBuf, redBuf, W, H); // Blocking BLE, no mutex
+
+    // Update status under mutex
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    _deviceStatuses[targetMac].lastAttempt = time(nullptr);
+    _deviceStatuses[targetMac].lastResult = success;
+
+    if(success) {
+        Serial.println("OK");
+        _deviceStatuses[targetMac].lastSuccess = time(nullptr);
+        _deviceStatuses[targetMac].lastSeen = time(nullptr);
+        _deviceStatuses[targetMac].pendingUpdate = false;
+        _deviceStatuses[targetMac].retryCount = 0;
+
+        String newDataStr;
+        serializeJson(data["param2"], newDataStr);
+        _deviceStatuses[targetMac].lastDataHash = newDataStr;
+
+    } else {
+        Serial.println("FAIL");
+        _deviceStatuses[targetMac].retryCount++;
+        int retries = _deviceStatuses[targetMac].retryCount;
+
+        int minutes = 30;
+        if (retries == 1) minutes = 1;
+        else if (retries == 2) minutes = 2;
+        else if (retries == 3) minutes = 3;
+        else if (retries == 4) minutes = 5;
+        else if (retries == 5) minutes = 10;
+
+        _deviceStatuses[targetMac].nextRetryTime = time(nullptr) + (minutes * 60);
+        Serial.printf("Retry queued in %d mins\n", minutes);
     }
-    
+    xSemaphoreGive(_mutex);
+
     free(bwBuf);
     free(redBuf);
     sprite.deleteSprite();
 }
 
-void SchedulingManager::sendTestPattern(String mac) {
+void SchedulingManager::_sendTestPattern(String mac) {
     const int W = 296;
     const int H = 128;
-    
+
     LGFX_Sprite sprite(_display);
-    sprite.setColorDepth(8); 
+    sprite.setColorDepth(8);
     sprite.createSprite(W, H);
-    
+
     sprite.fillSprite(TFT_WHITE);
-    
+
     // Draw Checkerboard
     int sq = 16;
     for(int y=0; y<H; y+=sq) {
@@ -338,35 +688,36 @@ void SchedulingManager::sendTestPattern(String mac) {
             }
         }
     }
-    
+
     // Red border
     sprite.drawRect(0, 0, W, H, TFT_RED);
     sprite.drawRect(1, 1, W-2, H-2, TFT_RED);
-    
+
     // Text
     sprite.fillRoundRect(20, 20, W-40, H-40, 10, TFT_WHITE);
     sprite.drawRoundRect(20, 20, W-40, H-40, 10, TFT_BLACK);
-    
+
     sprite.setTextColor(TFT_BLACK);
     sprite.setTextSize(3);
     sprite.setTextDatum(middle_center);
     sprite.drawString("TEST PATTERN", W/2, H/2 - 15);
-    
+
     sprite.setTextSize(1);
     sprite.setTextColor(TFT_RED);
     sprite.drawString(mac, W/2, H/2 + 20);
-    
+
     // Extraction
     int bufSize = W * H;
     uint8_t* bwBuf = (uint8_t*)malloc(bufSize);
     uint8_t* redBuf = (uint8_t*)malloc(bufSize);
-    
-    if(!bwBuf || !redBuf) { 
-        if(bwBuf) free(bwBuf); 
-        if(redBuf) free(redBuf); 
-        return; 
+
+    if(!bwBuf || !redBuf) {
+        if(bwBuf) free(bwBuf);
+        if(redBuf) free(redBuf);
+        sprite.deleteSprite();
+        return;
     }
-    
+
     for(int py=0; py<H; py++) {
         for(int px=0; px<W; px++) {
             uint16_t c = sprite.readPixel(px, py);
@@ -376,51 +727,29 @@ void SchedulingManager::sendTestPattern(String mac) {
                 bwBuf[py*W + px] = 0;
             } else {
                 redBuf[py*W + px] = 0;
-                bwBuf[py*W + px] = (c != TFT_WHITE) ? 1 : 0; // LightGrey becomes Black
+                bwBuf[py*W + px] = (c != TFT_WHITE) ? 1 : 0;
             }
         }
     }
-    
-    // Track Attempt
+
+    Serial.printf("Sending test pattern to %s ... ", mac.c_str());
+    bool success = _ble->updateTag(mac, bwBuf, redBuf, W, H); // Blocking BLE, no mutex
+
+    // Update status under mutex
+    xSemaphoreTake(_mutex, portMAX_DELAY);
     _deviceStatuses[mac].lastAttempt = time(nullptr);
-    bool success = _ble->updateTag(mac, bwBuf, redBuf, W, H);
     _deviceStatuses[mac].lastResult = success;
-    if(success) _deviceStatuses[mac].lastSuccess = time(nullptr);
-    
+    if(success) {
+        Serial.println("OK");
+        _deviceStatuses[mac].lastSuccess = time(nullptr);
+        _deviceStatuses[mac].lastSeen = time(nullptr);
+        _deviceStatuses[mac].lastDataHash = ""; // Invalidate so real data resends next time
+    } else {
+        Serial.println("FAIL");
+    }
+    xSemaphoreGive(_mutex);
+
     free(bwBuf);
     free(redBuf);
     sprite.deleteSprite();
-}
-
-String SchedulingManager::getDeviceStatusJson() {
-    // Return Array of Objects: [{"mac":"XX","lastSuccess":123,"lastAttempt":123,"result":true}]
-    // Merge with Configured Devices list to ensure we show all
-    
-    String configJson = _config->getDevicesJson();
-    JsonDocument doc;
-    deserializeJson(doc, configJson);
-    JsonArray configured = doc.as<JsonArray>();
-    
-    JsonDocument outDoc;
-    JsonArray outArr = outDoc.to<JsonArray>();
-    
-    for(JsonVariant v : configured) {
-        String mac = v.as<String>();
-        JsonObject obj = outArr.add<JsonObject>();
-        obj["mac"] = mac;
-        
-        if(_deviceStatuses.count(mac)) {
-            obj["lastSuccess"] = _deviceStatuses[mac].lastSuccess;
-            obj["lastAttempt"] = _deviceStatuses[mac].lastAttempt;
-            obj["result"] = _deviceStatuses[mac].lastResult;
-        } else {
-            obj["lastSuccess"] = 0;
-            obj["lastAttempt"] = 0;
-            obj["result"] = false;
-        }
-    }
-    
-    String out;
-    serializeJson(outDoc, out);
-    return out;
 }

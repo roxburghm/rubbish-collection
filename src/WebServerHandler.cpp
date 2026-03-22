@@ -1,21 +1,11 @@
 #include "WebServerHandler.h"
 #include <LittleFS.h>
-#include "CouncilClient.h" // Needed for searchAddress but we are calling it from here? No, we need CouncilClient access. 
-// Actually web server should have access to CouncilClient OR SchedulingManager can expose search?
-// Let's pass CouncilClient to WebServerHandler too or keep it simple.
-// The task said "Postcode Lookup API proxy".
-// Let's give WebServer access to CouncilClient. 
-// Wait, main.cpp has all of them. 
 
-// Let's modify WebServerHandler.h to include CouncilClient.
-#include "CouncilClient.h"
-
-WebServerHandler::WebServerHandler(ConfigManager* config, ZhsunycoMaster* bleCaller, SchedulingManager* scheduler, CouncilClient* api) 
+WebServerHandler::WebServerHandler(ConfigManager* config, ZhsunycoMaster* bleCaller, SchedulingManager* scheduler, CouncilClient* api)
     : _server(80), _config(config), _ble(bleCaller), _scheduler(scheduler), _api(api) {
 }
 
 void WebServerHandler::begin() {
-    // Initialize File System
     if(!LittleFS.begin(true)){
         Serial.println("An Error has occurred while mounting SPIFFS");
         return;
@@ -38,81 +28,108 @@ void WebServerHandler::_setupRoutes() {
     // Version API
     _server.on("/api/version", HTTP_GET, [](AsyncWebServerRequest *request){
         String v = String(__DATE__) + " " + String(__TIME__);
-        request->send(200, "application/json", "{\"version\":\"" + v + "\"}");
+        JsonDocument doc;
+        doc["version"] = v;
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
     });
 
-    // API: Config
+    // API: Config GET
     _server.on("/api/config", HTTP_GET, [this](AsyncWebServerRequest *request){
-        request->send(200, "application/json", "{\"uprn\":\"" + _config->getUPRN() + "\"}");
+        JsonDocument doc;
+        doc["uprn"] = _config->getUPRN();
+        doc["propertyName"] = _config->getPropertyName();
+        String json;
+        serializeJson(doc, json);
+        request->send(200, "application/json", json);
     });
-    
+
+    // API: Config POST
     _server.on("/api/config", HTTP_POST, [this](AsyncWebServerRequest *request){
-        // Basic Param handling
         if (request->hasParam("uprn", true)) {
             _config->setUPRN(request->getParam("uprn", true)->value());
         }
-         request->send(200, "text/plain", "OK");
+        if (request->hasParam("propertyName", true)) {
+            _config->setPropertyName(request->getParam("propertyName", true)->value());
+        }
+        request->send(200, "text/plain", "OK");
     });
-    
+
     // API: List Devices (Configured + Status)
     _server.on("/api/devices", HTTP_GET, [this](AsyncWebServerRequest *request){
-         // Updated to return objects with status
-         String json = _scheduler->getDeviceStatusJson(); 
+         String json = _scheduler->getDeviceStatusJson();
          request->send(200, "application/json", json);
     });
-    
+
+    // API: Update Device Config (Rotation)
+    _server.on("/api/device/config", HTTP_POST, [](AsyncWebServerRequest *request){}, NULL, [this](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+
+         JsonDocument doc;
+         DeserializationError error = deserializeJson(doc, data, len);
+
+         if (error) {
+             request->send(400, "text/plain", "Invalid JSON");
+             return;
+         }
+
+         String mac = doc["mac"];
+         bool rotate = doc["rotate"];
+
+         if(mac.length() > 0) {
+             _config->setDeviceRotation(mac, rotate);
+             _scheduler->requestTriggerDevice(mac);
+             request->send(200, "text/plain", "OK");
+         } else {
+             request->send(400, "text/plain", "Bad Request");
+         }
+    });
+
     // API: Add Device
     _server.on("/api/devices", HTTP_POST, [this](AsyncWebServerRequest *request){
         if (request->hasParam("mac", true)) {
             String mac = request->getParam("mac", true)->value();
             _config->addDevice(mac);
+            _scheduler->requestTriggerDevice(mac);
             request->send(200, "text/plain", "Added");
         } else {
             request->send(400, "text/plain", "Missing mac");
         }
     });
-    
+
     // API: Remove Device
     _server.on("/api/devices", HTTP_DELETE, [this](AsyncWebServerRequest *request){
-        if (request->hasParam("mac", true)) { // DELETE params usually in query, not body for simple requests, or body. 
-            // AsyncWebServer handles URL params easily.
-            // Let's assume query string for DELETE: /api/devices?mac=XX
-            String mac = request->getParam("mac", true)->value(); // true = POST/BODY? No, DELETE might be query. 
-            // Let's check query params too.
-            // if "true" is passed, it checks body. We want URL param.
-            // request->getParam("mac") checks all.
-        }
-        
         String mac = "";
         if(request->hasParam("mac", true)) mac = request->getParam("mac", true)->value();
         else if(request->hasParam("mac")) mac = request->getParam("mac")->value();
-        
+
         if (mac.length() > 0) {
             _config->removeDevice(mac);
+            _scheduler->requestRemoveDevice(mac);
             request->send(200, "text/plain", "Removed");
         } else {
             request->send(400, "text/plain", "Missing mac");
         }
     });
 
-    // API: BLE Scan (Optional Context for manual entry assistance?)
-    // Keeping it but devices should now be managed manually as requested.
+    // API: BLE Scan
     _server.on("/api/ble/scan", HTTP_GET, [this](AsyncWebServerRequest *request){
          if (!_ble) {
              request->send(500, "text/plain", "BLE Module Error");
              return;
          }
-         std::vector<String> devices = _ble->scanTags(3); // 3 seconds scan
-         String json = "[";
+         std::vector<String> devices = _ble->scanTags(3);
+         JsonDocument doc;
+         JsonArray arr = doc.to<JsonArray>();
          for(size_t i=0; i<devices.size(); i++) {
-             json += "\"" + devices[i] + "\"";
-             if(i < devices.size()-1) json += ",";
+             arr.add(devices[i]);
          }
-         json += "]";
+         String json;
+         serializeJson(doc, json);
          request->send(200, "application/json", json);
     });
-    
-    // API: Proxy Text (Postcode Lookup)
+
+    // API: Postcode Lookup Proxy
     _server.on("/api/lookup/postcode", HTTP_GET, [this](AsyncWebServerRequest *request){
        if (request->hasParam("postcode")) {
            String pc = request->getParam("postcode")->value();
@@ -124,43 +141,40 @@ void WebServerHandler::_setupRoutes() {
            request->send(400, "text/plain", "Missing postcode param");
        }
     });
-    
-    // API: Refresh Data
+
+    // API: Refresh Data (non-blocking, queued for main loop)
     _server.on("/api/refresh", HTTP_POST, [this](AsyncWebServerRequest *request){
-        _scheduler->forceUpdate();
+        _scheduler->requestForceUpdate();
         request->send(200, "text/plain", "OK");
     });
-    
+
     // API: Status (Timestamps + WiFi)
     _server.on("/api/status", HTTP_GET, [this](AsyncWebServerRequest *request){
-        // We need methods in Scheduler to get these.
-        time_t last = _scheduler->getLastUpdateEpoch(); 
-        
-        // Return JSON
-        String json = "{";
-        json += "\"lastUpdate\":" + String((uint32_t)last) + "000,"; 
-        json += "\"nextUpdate\":" + String((uint32_t)last + (6*60*60)) + "000,";
-        
-        // WiFi Status
-        json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-        json += "\"ssid\":\"" + WiFi.SSID() + "\"";
-        
-        json += "}";
+        time_t last = _scheduler->getLastUpdateEpoch();
+
+        JsonDocument doc;
+        doc["lastUpdate"] = (unsigned long long)last * 1000;
+        doc["nextUpdate"] = (unsigned long long)_scheduler->getNextScheduledEpoch() * 1000;
+        doc["rssi"] = WiFi.RSSI();
+        doc["ssid"] = WiFi.SSID();
+
+        String json;
+        serializeJson(doc, json);
         request->send(200, "application/json", json);
     });
-    
-    // API: Test Device
+
+    // API: Test Device (non-blocking, queued for main loop)
     _server.on("/api/test", HTTP_POST, [this](AsyncWebServerRequest *request){
         if (request->hasParam("mac", true)) {
             String mac = request->getParam("mac", true)->value();
-            _scheduler->sendTestPattern(mac);
-            request->send(200, "text/plain", "Test Sent");
+            _scheduler->requestTestPattern(mac);
+            request->send(200, "text/plain", "Test Queued");
         } else {
             request->send(400, "text/plain", "Missing mac");
         }
     });
-    
 
+    // API: Schedule Data
     _server.on("/api/schedule", HTTP_GET, [this](AsyncWebServerRequest *request){
          JsonDocument doc = _scheduler->getLastSchedule();
          String json;

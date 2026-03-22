@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
+#include <NetworkClientSecure.h>
 
 class CouncilClient {
 public:
@@ -11,5 +12,4 @@ public:
 
 private:
     const char* _baseUrl = "https://www.ealing.gov.uk/site/custom_scripts/WasteCollectionWS/home";
-    HTTPClient _http;
 };

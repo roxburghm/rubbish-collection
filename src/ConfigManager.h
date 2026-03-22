@@ -24,8 +24,14 @@ public:
     void addDevice(String mac);
     void removeDevice(String mac);
     String getDevicesJson(); // Returns ["MAC1", "MAC2"]
+    
+    // Per-Device Config (Rotation)
+    void setDeviceRotation(String mac, bool rotate);
+    bool getDeviceRotation(String mac);
+
+    void setPropertyName(String name);
+    String getPropertyName();
 
 private:
     Preferences _prefs;
-    String _deviceList; // Cache
 };

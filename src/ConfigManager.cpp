@@ -76,3 +76,35 @@ void ConfigManager::removeDevice(String mac) {
     serializeJson(doc, output);
     _prefs.putString("devices", output);
 }
+
+void ConfigManager::setDeviceRotation(String mac, bool rotate) {
+    String current = _prefs.getString("device_cfgs", "{}");
+    JsonDocument doc;
+    deserializeJson(doc, current);
+    
+    JsonObject obj = doc[mac].to<JsonObject>();
+    obj["rot"] = rotate;
+    
+    String output;
+    serializeJson(doc, output);
+    _prefs.putString("device_cfgs", output);
+}
+
+bool ConfigManager::getDeviceRotation(String mac) {
+    String current = _prefs.getString("device_cfgs", "{}");
+    JsonDocument doc;
+    deserializeJson(doc, current);
+    
+    if (!doc[mac].isNull()) {
+        return doc[mac]["rot"].as<bool>();
+    }
+    return false; // Default 0
+}
+
+void ConfigManager::setPropertyName(String name) {
+    _prefs.putString("prop_name", name);
+}
+
+String ConfigManager::getPropertyName() {
+    return _prefs.getString("prop_name", "");
+}

@@ -4,9 +4,9 @@
 #include <ESPAsyncWebServer.h>
 #include "LGFX_Setup.hpp"
 
-class NetworkManager {
+class WifiHandler {
 public:
-    NetworkManager(LGFX* display);
+    WifiHandler(LGFX* display);
     void begin();
     void loop();
     bool isConnected();

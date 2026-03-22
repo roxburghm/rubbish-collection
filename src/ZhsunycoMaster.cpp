@@ -1,5 +1,27 @@
 #include "ZhsunycoMaster.h"
 
+// Scan callback that stops immediately when the target device is found.
+// This avoids waiting the full scan duration once we know the tag is awake.
+// Compares by MAC string only — NimBLE v2 address == also checks type,
+// but we may not know the type when constructing from a stored string.
+class TargetScanCallback : public NimBLEScanCallbacks {
+public:
+    std::string targetStr;
+    NimBLEAddress foundAddress; // Actual address with correct type from scan
+    bool found;
+
+    TargetScanCallback(NimBLEAddress addr) : targetStr(addr.toString()), found(false) {}
+
+    void onResult(const NimBLEAdvertisedDevice* device) override {
+        if (device->getAddress().toString() == targetStr) {
+            found = true;
+            foundAddress = device->getAddress();
+            Serial.printf("BLE: Target %s seen, connecting immediately\n", targetStr.c_str());
+            NimBLEDevice::getScan()->stop();
+        }
+    }
+};
+
 ZhsunycoMaster::ZhsunycoMaster() {
     _client = nullptr;
 }
@@ -14,12 +36,12 @@ void ZhsunycoMaster::begin() {
 
 std::vector<String> ZhsunycoMaster::scanTags(int durationSec) {
     std::vector<String> foundTags;
-    NimBLEScanResults results = _scan->start(durationSec);
-    
+    NimBLEScanResults results = _scan->getResults(durationSec * 1000);
+
     for(int i=0; i<results.getCount(); i++) {
-        NimBLEAdvertisedDevice device = results.getDevice(i);
-        if (device.isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-            foundTags.push_back(device.getAddress().toString().c_str());
+        const NimBLEAdvertisedDevice* device = results.getDevice(i);
+        if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
+            foundTags.push_back(String(device->getAddress().toString().c_str()));
         }
     }
     return foundTags;
@@ -31,7 +53,7 @@ uint16_t ZhsunycoMaster::crc16(const uint8_t* data, size_t len) {
         0x0000, 0x8005, 0x800F, 0x000A, 0x801B, 0x001E, 0x0014, 0x8011,
         0x8033, 0x0036, 0x003C, 0x8039, 0x0028, 0x802D, 0x8027, 0x0022
     };
-    
+
     for (size_t i = 0; i < len; i++) {
         uint8_t byte = data[i];
         for (int j = 0; j < 2; j++) {
@@ -58,11 +80,11 @@ std::vector<uint8_t> ZhsunycoMaster::compressRLE(const uint8_t* data, size_t len
              j++;
              if (run_len >= 0xFFFF) break;
          }
-         
+
          if (run_len < 7) {
              uint8_t byte_val = 0x80;
              if (i < len) byte_val |= (data[i] << 6);
-             
+
              int consumed = 0;
              uint8_t accum = 0;
              for (int k = 0; k < 7; k++) {
@@ -102,143 +124,212 @@ String ZhsunycoMaster::bytesToHex(const std::vector<uint8_t>& data) {
 }
 
 bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const uint8_t* redBitmap, int width, int height) {
-    NimBLEAddress address(macAddress.c_str());
+    NimBLEAddress address(std::string(macAddress.c_str()), BLE_ADDR_PUBLIC);
     if (!connect(address)) return false;
-    
-    // 1. Prepare Data
-    // Note: Python script logic:
-    // compress bw
-    // compress red
-    // payload string = FC...hex_bw + FC8...hex_red
-    
-    // We assume input Bitmaps are 1 byte per pixel? Or packed?
-    // The RLE expects specific values.
-    // Python RLE: `data: List[int]` where int is 0 or 1.
-    // So input `bwBitmap` should be 1 byte per pixel (0 or 1).
-    
+
     size_t numPixels = width * height;
     std::vector<uint8_t> comp_bw = compressRLE(bwBitmap, numPixels);
     std::vector<uint8_t> comp_red = compressRLE(redBitmap, numPixels);
-    
+
     String hex_bw = bytesToHex(comp_bw);
     String hex_red = bytesToHex(comp_red);
-    
+
     int h_minus_1 = height - 1;
     int w_minus_1 = width - 1;
-    
+
     char headerPart1[100];
-    // Packet 1 (BW): FC + X0(4) + Y0(4) + Y1(4) + X1(4) + Len(8)
     sprintf(headerPart1, "FC%04X%04X%04X%04X%08X", 0, 0, h_minus_1, w_minus_1, (int)comp_bw.size());
-    
+
     char headerPart2[100];
-    // Packet 2 (Red): FC8 + X0(3) + Y0(4) + 8 + Y1(3) + X1(4) + Len(8)
-    // NOTE: X0=000, Y1=h_minus_1 (3 chars)
     sprintf(headerPart2, "FC8%03X%04X8%03X%04X%08X", 0, 0, h_minus_1, w_minus_1, (int)comp_red.size());
-    
+
     String fullPayloadHex = String(headerPart1) + hex_bw + String(headerPart2) + hex_red;
-    
+
     // Convert hex string to bytes
     std::vector<uint8_t> payload;
     for (unsigned int i = 0; i < fullPayloadHex.length(); i += 2) {
         String byteString = fullPayloadHex.substring(i, i + 2);
         payload.push_back((uint8_t) strtol(byteString.c_str(), NULL, 16));
     }
-    
-    // 2. Encryption Key
+
+    // Encryption Key
     uint8_t macXor = 0;
-    const uint8_t* macBytes = address.getNative();
-    for(int i=0; i<6; i++) macXor ^= macBytes[i];
+    const ble_addr_t* macAddr = address.getBase();
+    for(int i=0; i<6; i++) macXor ^= macAddr->val[i];
     uint8_t key = macXor ^ 0x31;
-    
-    // 3. Build Packets
+
+    // Build Packets
     int totalLen = payload.size();
     int count = (totalLen + 199) / 200;
-    
+
     // Header Packet
     uint8_t headerPkt[20];
     headerPkt[0] = 0xFF;
     headerPkt[1] = 0xFC;
     memcpy(&headerPkt[2], "easyTag", 7);
     headerPkt[9] = 0x62; // Unencrypted
-    
+
     headerPkt[10] = (totalLen >> 24) & 0xFF;
-    headerPkt[11] = (totalLen >> 16) & 0xFF; // Python len(payload).to_bytes(4, 'big')
+    headerPkt[11] = (totalLen >> 16) & 0xFF;
     headerPkt[12] = (totalLen >> 8) & 0xFF;
     headerPkt[13] = totalLen & 0xFF;
-    
+
     headerPkt[14] = (count >> 8) & 0xFF;
     headerPkt[15] = count & 0xFF;
-    
+
     headerPkt[16] = 0x42; // B
     headerPkt[17] = 0x54; // T
-    
+
     uint16_t headerCrc = crc16(headerPkt, 18);
     headerPkt[18] = (headerCrc >> 8) & 0xFF;
     headerPkt[19] = headerCrc & 0xFF;
-    
+
     // Encrypt Header (EXCEPT byte 9)
     for(int i=0; i<20; i++) {
         if (i != 9) headerPkt[i] ^= key;
     }
-    
-    // Send Header
+
+    // Get Service and Characteristic
     NimBLERemoteService* pService = _client->getService(SERVICE_UUID);
-    if (!pService) return false;
+    if (!pService) {
+        Serial.println("BLE: Service not found");
+        disconnect();
+        return false;
+    }
     NimBLERemoteCharacteristic* pChar = pService->getCharacteristic(CHAR_WRITE_UUID);
-    if (!pChar) return false;
-    
-    pChar->writeValue(headerPkt, 20, true); // Write with response
+    if (!pChar) {
+        Serial.println("BLE: Write characteristic not found");
+        disconnect();
+        return false;
+    }
+
+    // Send Header
+    if (!pChar->writeValue(headerPkt, 20, true)) {
+        Serial.println("BLE: Header write failed");
+        disconnect();
+        return false;
+    }
     delay(500);
-    
+
     // Send Data Packets
     for (int i = 0; i < count; i++) {
         uint8_t chunk[204];
         memset(chunk, 0, 204);
-        
+
         uint16_t seq = i + 1;
         chunk[0] = (seq >> 8) & 0xFF;
         chunk[1] = seq & 0xFF;
-        
+
         int startIdx = i * 200;
         int len = 200;
         if (startIdx + len > totalLen) len = totalLen - startIdx;
-        
-        memcpy(&chunk[2], &payload[startIdx], len); // Padded with 0s if short
-        
-        // CRC includes Seq + Data (202 bytes)
+
+        memcpy(&chunk[2], &payload[startIdx], len);
+
         uint16_t dataCrc = crc16(chunk, 202);
         chunk[202] = (dataCrc >> 8) & 0xFF;
         chunk[203] = dataCrc & 0xFF;
-        
+
         // Encrypt
         for(int j=0; j<204; j++) chunk[j] ^= key;
-        
-        pChar->writeValue(chunk, 204, true);
-        // No delay needed if Write With Response, but maybe safer with small one
-        // Python said "Write with Response recommended, or 20ms delays"
+
+        if (!pChar->writeValue(chunk, 204, true)) {
+            Serial.printf("BLE: Chunk %d/%d write failed\n", i+1, count);
+            disconnect();
+            return false;
+        }
     }
-    
+
     disconnect();
     return true;
 }
 
 bool ZhsunycoMaster::connect(NimBLEAddress address) {
-    if (_client != nullptr && _client->isConnected()) {
-        if (_client->getPeerAddress().equals(address)) return true;
-        _client->disconnect();
+    // Clean up any existing client to avoid exhausting the NimBLE client pool
+    if (_client != nullptr) {
+        if (_client->isConnected()) {
+            if (_client->getPeerAddress().toString() == address.toString()) return true;
+            _client->disconnect();
+        }
+        NimBLEDevice::deleteClient(_client);
+        _client = nullptr;
     }
-    
+
+    // Scan for the target device, waiting for it to wake up.
+    // Tags only advertise every 40-60s, so we need a long window.
+    // The callback stops the scan immediately when found, so we connect
+    // while the tag is still awake rather than waiting the full 65s.
+    Serial.printf("BLE: Waiting for %s to wake up (up to 65s)...\n", address.toString().c_str());
+    TargetScanCallback cb(address);
+    _scan->setScanCallbacks(&cb);
+    _scan->clearResults();
+    _scan->start(65000, false); // Async scan
+    unsigned long scanStart = millis();
+    while (!cb.found && (millis() - scanStart < 65000)) {
+        delay(10);
+    }
+    _scan->stop();
+    _scan->setScanCallbacks(nullptr);
+
+    if (!cb.found) {
+        Serial.printf("BLE: %s not found (out of range?)\n", address.toString().c_str());
+        return false;
+    }
+
+    // Wait for scan to fully stop before connecting
+    NimBLEAddress actualAddress = cb.foundAddress;
+    Serial.printf("BLE: %s found (type=%d)\n", actualAddress.toString().c_str(), actualAddress.getType());
+    while (_scan->isScanning()) { delay(10); }
+
     _client = NimBLEDevice::createClient();
-    if (_client->connect(address)) {
+    if (_client == nullptr) {
+        Serial.println("BLE: Failed to create client (pool exhausted)");
+        return false;
+    }
+    _client->setConnectTimeout(10000);
+
+    // Try with scanned address type first, then try the other type
+    Serial.printf("BLE: Connecting (type=%d)...\n", actualAddress.getType());
+    if (_client->connect(actualAddress, false)) {
+        Serial.printf("BLE: Connected to %s\n", actualAddress.toString().c_str());
         return true;
     }
+    // connect() may return false due to MTU exchange failure even though
+    // the link-layer connection succeeded (e-ink tags don't support MTU negotiation)
+    if (_client->isConnected()) {
+        Serial.println("BLE: Connected (MTU exchange failed, using default MTU)");
+        return true;
+    }
+
+    // Clean up before retry with alternate address type
+    _client->disconnect();
+    delay(100);
+
+    // Flip address type and retry (public<->random)
+    uint8_t otherType = actualAddress.getType() == BLE_ADDR_PUBLIC ? BLE_ADDR_RANDOM : BLE_ADDR_PUBLIC;
+    NimBLEAddress altAddress(actualAddress.toString(), otherType);
+    Serial.printf("BLE: Retrying with type=%d...\n", otherType);
+    if (_client->connect(altAddress, false)) {
+        Serial.printf("BLE: Connected to %s (type=%d)\n", altAddress.toString().c_str(), otherType);
+        return true;
+    }
+    if (_client->isConnected()) {
+        Serial.println("BLE: Connected (MTU exchange failed, using default MTU)");
+        return true;
+    }
+
+    Serial.printf("BLE: Failed to connect to %s with either address type\n", actualAddress.toString().c_str());
+    _client->disconnect();
+    NimBLEDevice::deleteClient(_client);
+    _client = nullptr;
     return false;
 }
 
 bool ZhsunycoMaster::disconnect() {
     if (_client) {
         _client->disconnect();
-        return true;
+        NimBLEDevice::deleteClient(_client);
+        _client = nullptr;
     }
-    return false;
+    return true;
 }

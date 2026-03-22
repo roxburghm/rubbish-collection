@@ -1,10 +1,11 @@
 #include "NetworkManager.h"
 #include <WiFi.h>
+#include <ESPmDNS.h>
 
-NetworkManager::NetworkManager(LGFX* display) : _display(display) {
+WifiHandler::WifiHandler(LGFX* display) : _display(display) {
 }
 
-void NetworkManager::_onAPCallback(WiFiManager *myWiFiManager) {
+void WifiHandler::_onAPCallback(WiFiManager *myWiFiManager) {
     Serial.println("Entering AP Mode");
     Serial.println(myWiFiManager->getConfigPortalSSID());
     Serial.println(WiFi.softAPIP());
@@ -50,7 +51,7 @@ void NetworkManager::_onAPCallback(WiFiManager *myWiFiManager) {
     }
 }
 
-void NetworkManager::begin() {
+void WifiHandler::begin() {
     // Generate random ID for RubbishXXXX
     uint32_t chipId = 0;
     for(int i=0; i<17; i=i+8) {
@@ -59,16 +60,9 @@ void NetworkManager::begin() {
     String ssid = "Rubbish" + String((uint16_t)chipId);
     
     _wifiManager.setAPCallback([this](WiFiManager* wm) { this->_onAPCallback(wm); });
-    
-    // Set up non-blocking? logic might be needed for the main loop, 
-    // but WiFiManager autoConnect is blocking by default. 
-    // We want it to block if it't not connected? 
-    // The requirement says: "Turn server on... not configured... broadcasts wifi"
-    // "When setup... stop serving wifi and connect to real wifi"
-    // "fall back to unconfigured if fails"
-    
-    // WiFiManager handles this flow automatically via autoConnect()
-    
+    _wifiManager.setConnectTimeout(30);
+    _wifiManager.setConnectRetries(3);
+
     if(!_wifiManager.autoConnect(ssid.c_str(), ssid.c_str())) {
         Serial.println("Failed to connect and hit timeout");
         // Reset or sleep?
@@ -78,11 +72,17 @@ void NetworkManager::begin() {
     // If we get here, we are connected
     Serial.println("WiFi connected");
     Serial.println(WiFi.localIP());
+    
+    // Init mDNS
+    if (MDNS.begin("rubbish")) {
+        Serial.println("mDNS responder started: http://rubbish.local");
+        MDNS.addService("http", "tcp", 80);
+    } else {
+        Serial.println("Error setting up MDNS responder!");
+    }
 
-    // Init NTP (UK Time)
-    configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-    setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0", 1);
-    tzset();
+    // Init NTP (UK Time - Europe/London)
+    configTzTime("GMT0BST,M3.5.0/1,M10.5.0", "pool.ntp.org", "time.nist.gov");
     
     // Wait for time?
     struct tm timeinfo;
@@ -161,7 +161,7 @@ void NetworkManager::begin() {
     }
 }
 
-void NetworkManager::loop() {
+void WifiHandler::loop() {
     // Update Clock every minute
     static unsigned long lastClock = 0;
     if (_display && (millis() - lastClock > 1000)) { // Update every second for debug, or minute? Minute is fine. 
@@ -199,10 +199,10 @@ void NetworkManager::loop() {
     }
 }
 
-bool NetworkManager::isConnected() {
+bool WifiHandler::isConnected() {
     return WiFi.status() == WL_CONNECTED;
 }
 
-String NetworkManager::getIpAddress() {
+String WifiHandler::getIpAddress() {
     return WiFi.localIP().toString();
 }

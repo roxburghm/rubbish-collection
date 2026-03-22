@@ -1,7 +1,7 @@
 :root {
     --bg-color: #121212;
     --card-bg: #1e1e1e;
-    --primary: #bb86fc;
+    --primary: #0088ff;
     --secondary: #03dac6;
     --text-main: #ffffff;
     --text-muted: #b0b0b0;
@@ -55,7 +55,6 @@ h2 {
     margin-bottom: 15px;
 }
 
-
 label {
     display: block;
     margin-bottom: 5px;
@@ -65,7 +64,6 @@ label {
 
 input,
 select {
-    /* Remove width: 100% default to allow flex scaling */
     padding: 10px;
     background: #2c2c2c;
     border: 1px solid #444;
@@ -78,13 +76,13 @@ select {
     display: flex;
     gap: 10px;
     align-items: center;
-    /* Vertically align */
 }
 
-/* Make inputs inside input-group fill available space */
 .input-group input {
     flex: 1;
 }
+
+/* Buttons */
 
 button {
     background: #333;
@@ -96,11 +94,14 @@ button {
     font-weight: 500;
     transition: background 0.2s;
     white-space: nowrap;
-    /* Prevent button text wrapping */
 }
 
 button:hover {
     background: #444;
+}
+
+button:disabled {
+    cursor: not-allowed;
 }
 
 button.primary {
@@ -109,10 +110,82 @@ button.primary {
 }
 
 button.primary:hover {
-    background: #9965f4;
+    background: #0088ff;
 }
 
-/* Device List Item Styling */
+button.small {
+    padding: 5px 10px;
+    font-size: 0.8rem;
+}
+
+button.danger {
+    background: #c62828;
+}
+
+button.danger:hover {
+    background: #e53935;
+}
+
+button.loading {
+    opacity: 0.7;
+}
+
+button.disabled {
+    background: #ccc;
+    color: #666;
+    cursor: not-allowed;
+}
+
+/* WiFi Signal Indicator */
+
+.wifi-indicator {
+    display: flex;
+    align-items: center;
+    cursor: default;
+}
+
+.wifi-bar {
+    fill: #333;
+    transition: fill 0.3s;
+}
+
+/* Modal */
+
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 100;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.modal-content {
+    background-color: var(--card-bg);
+    margin: 15% auto;
+    padding: 20px;
+    border: 1px solid #888;
+    width: 90%;
+    max-width: 400px;
+    border-radius: 8px;
+}
+
+.modal .close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.modal-action {
+    margin-top: 10px;
+}
+
+/* Device List */
+
 .device-item {
     display: flex;
     justify-content: space-between;
@@ -128,8 +201,76 @@ button.primary:hover {
     gap: 5px;
 }
 
+.device-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.device-mac {
+    font-weight: 600;
+}
+
+.device-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* Rotation Button */
+
+.rotate-btn {
+    padding: 4px 10px;
+    border: none;
+    cursor: pointer;
+    background: #333;
+    border-radius: 6px;
+    color: var(--text-muted);
+    transition: transform 0.3s ease, color 0.3s ease;
+}
+
+.rotate-btn svg {
+    display: block;
+}
+
+.rotate-btn.rotated svg {
+    transform: rotate(180deg);
+}
+
+.rotate-btn:hover {
+    background: #444;
+}
+
+/* Device Status Colors */
+
+.status-ok {
+    color: #4CAF50;
+}
+
+.status-fail {
+    color: #F44336;
+}
+
+.status-new {
+    color: #888;
+}
+
+.status-seen {
+    color: #888;
+    font-size: 0.8rem;
+}
+
+.status-retry {
+    color: #FF9800;
+    font-weight: bold;
+}
+
+.status-pending {
+    color: #2196F3;
+    font-weight: bold;
+}
 
 /* Collection Items */
+
 .collection-item {
     display: flex;
     align-items: center;
@@ -153,4 +294,66 @@ button.primary:hover {
     margin: 0;
     color: var(--text-muted);
     font-size: 0.9rem;
+}
+
+/* Pending Update Styling */
+.device-item.pending-update {
+    border-left: 4px solid #FF9800;
+    /* Orange border */
+}
+
+.status-pending-badge {
+    color: #FF9800;
+    font-weight: bold;
+    font-size: 0.8rem;
+    margin-left: 5px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        opacity: 0.6;
+    }
+
+    50% {
+        opacity: 1;
+    }
+
+    100% {
+        opacity: 0.6;
+    }
+}
+
+/* Status Info */
+
+.status-info {
+    margin-bottom: 10px;
+    color: #888;
+    font-size: 0.9rem;
+    text-align: center;
+}
+
+/* Utilities */
+
+.muted {
+    color: #666;
+}
+
+.centered {
+    text-align: center;
+}
+
+.hint {
+    font-size: 0.8rem;
+    color: #888;
+    margin-top: 4px;
+}
+
+/* Footer */
+
+.app-footer {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    font-size: 0.8rem;
 }
