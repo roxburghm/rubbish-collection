@@ -356,9 +356,15 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data, String targetM
     JsonArray serviceList = data["param2"].as<JsonArray>();
     String nextDate = ""; // Raw dd/mm/yyyy — earliest date across all services
 
-    // Helper: extract first date from potentially comma-separated collectionDateString
-    // e.g. "23/03/2026,23/03/2026" -> "23/03/2026"
-    auto firstDate = [](String raw) -> String {
+    // Helper: extract first date from collectionDateString
+    // Handles both array (["26/01/2026", "02/02/2026"]) and string formats
+    auto firstDate = [](JsonVariant field) -> String {
+        if (field.is<JsonArray>()) {
+            JsonArray arr = field.as<JsonArray>();
+            if (arr.size() > 0) return arr[0].as<String>();
+            return "";
+        }
+        String raw = field.as<String>();
         raw.trim();
         int comma = raw.indexOf(',');
         if (comma > 0) raw = raw.substring(0, comma);
@@ -370,13 +376,12 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data, String targetM
     Serial.println("=== Service List ===");
     for (JsonVariant v : serviceList) {
         String s = v["Service"].as<String>();
-        String rawDate = v["collectionDateString"].as<String>();
-        String d = firstDate(rawDate);
-        Serial.printf("  Service: [%s] Date: [%s] (raw: [%s])\n", s.c_str(), d.c_str(), rawDate.c_str());
+        String d = firstDate(v["collectionDateString"]);
+        Serial.printf("  Service: [%s] Date: [%s]\n", s.c_str(), d.c_str());
     }
 
     for (JsonVariant v : serviceList) {
-        String d = firstDate(v["collectionDateString"].as<String>());
+        String d = firstDate(v["collectionDateString"]);
         if (d.length() < 10) continue;
         if (nextDate.length() == 0) {
             nextDate = d;
@@ -445,7 +450,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data, String targetM
 
     for (int o = 0; o < 4; o++) {
         for (JsonVariant v : serviceList) {
-            String d = firstDate(v["collectionDateString"].as<String>());
+            String d = firstDate(v["collectionDateString"]);
             if (d != nextDate) continue;
             String s = v["Service"].as<String>();
             s.toUpperCase();
@@ -544,33 +549,16 @@ void SchedulingManager::_generateAndSendImage(JsonDocument& data, String targetM
             s.toUpperCase();
             if (s.indexOf(gridKeys[o]) < 0) continue;
 
-            String d = firstDate(v["collectionDateString"].as<String>());
+            String d = firstDate(v["collectionDateString"]);
 
             // Calc Position
             int x = (itemIdx % 2 == 0) ? col1X : col2X;
             int y = (itemIdx < 2) ? row1Y : row2Y;
 
-            // Logic for "NEXT"
+            // Show dd/mm with * to highlight next collection
             String dateLabel = d.substring(0, 5); // dd/mm
             if (d == nextDate) {
                 dateLabel += " *";
-            }
-            if (timeKnown) {
-                int day = d.substring(0, 2).toInt();
-                int month = d.substring(3, 5).toInt();
-                int year = d.substring(6, 10).toInt();
-                struct tm dTm = {0};
-                dTm.tm_mday = day; dTm.tm_mon = month - 1; dTm.tm_year = year - 1900; dTm.tm_isdst = -1;
-                time_t dEpoch = mktime(&dTm);
-
-                struct tm todayTm = timeinfo;
-                todayTm.tm_hour = 0; todayTm.tm_min = 0; todayTm.tm_sec = 0;
-                time_t todayEpoch = mktime(&todayTm);
-
-                double diff = difftime(dEpoch, todayEpoch);
-                if (diff >= 86400 && diff < 172800) {
-                    dateLabel = "NEXT";
-                }
             }
 
             // Display in Grid: Service ... Date

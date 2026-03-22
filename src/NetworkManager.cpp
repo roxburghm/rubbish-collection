@@ -138,7 +138,7 @@ void WifiHandler::begin() {
         _display->setCursor(10, 60);
         _display->setTextColor(TFT_WHITE);
         _display->setTextSize(1);
-        _display->println("Network:");
+        _display->println("Network SSID");
         _display->setCursor(10, 72);
         _display->setTextColor(TFT_CYAN); // Pop color
         _display->setTextSize(2); 
