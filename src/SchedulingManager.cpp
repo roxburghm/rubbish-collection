@@ -409,17 +409,6 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   JsonArray serviceList = data["param2"].as<JsonArray>();
   String nextDate = ""; // Raw dd/mm/yyyy — earliest date across all services
 
-  // Helper: extract first date from potentially comma-separated
-  // collectionDateString e.g. "23/03/2026,23/03/2026" -> "23/03/2026"
-  auto firstDate = [](String raw) -> String {
-    raw.trim();
-    int comma = raw.indexOf(',');
-    if (comma > 0)
-      raw = raw.substring(0, comma);
-    raw.trim();
-    return raw;
-  };
-
   // Helper: extract first date from collectionDateString
   // Handles both array (["26/01/2026", "02/02/2026"]) and string formats
   auto firstDate = [](JsonVariant field) -> String {
@@ -454,6 +443,80 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     }
   }
   Serial.printf("nextDate: [%s]\n", nextDate.c_str());
+
+  struct tm timeinfo;
+  bool timeKnown = getLocalTime(&timeinfo);
+
+  // Smart Date Logic
+  String headerText = nextDate; // Fallback
+  bool isUrgent = false;
+
+  if (timeKnown && nextDate.length() >= 10) {
+    // Parse nextDate (dd/mm/yyyy)
+    int day = nextDate.substring(0, 2).toInt();
+    int month = nextDate.substring(3, 5).toInt();
+    int year = nextDate.substring(6, 10).toInt();
+
+    // Construct tm for nextDate
+    struct tm nextTm = {0};
+    nextTm.tm_mday = day;
+    nextTm.tm_mon = month - 1;
+    nextTm.tm_year = year - 1900;
+    nextTm.tm_isdst = -1;
+    time_t nextEpoch = mktime(&nextTm);
+
+    // Normalize Today (remove time)
+    struct tm todayTm = timeinfo;
+    todayTm.tm_hour = 0;
+    todayTm.tm_min = 0;
+    todayTm.tm_sec = 0;
+    time_t todayEpoch = mktime(&todayTm);
+
+    double diff = difftime(nextEpoch, todayEpoch);
+
+    if (diff >= 0 && diff < 86400) {
+      // Collection day itself
+      headerText = "COLLECTION DAY";
+      isUrgent = false; // Black background
+    } else if (diff >= 86400 && diff < 172800) {
+      // 1 day before collection - put bins out today
+      headerText = "TODAY";
+      isUrgent = true;
+    } else if (diff >= 172800 && diff < 259200) {
+      // 2 days before collection - put bins out tomorrow
+      headerText = "TOMORROW";
+      isUrgent = true;
+    } else {
+      // Format DOW dd/mm
+      char buf[20];
+      strftime(buf, 20, "%a %d/%m", &nextTm);
+      headerText = String(buf);
+      headerText.toUpperCase(); // e.g. MON 27/02
+    }
+  }
+
+  // Collect all services for this date in preferred display order
+  String servicesLine = "";
+  const char *binKeys[] = {"RUBBISH", "RECYCLING", "FOOD", "GARDEN"};
+
+  for (int o = 0; o < 4; o++) {
+    for (JsonVariant v : serviceList) {
+      String d = firstDate(v["collectionDateString"]);
+      if (d != nextDate)
+        continue;
+      String s = v["Service"].as<String>();
+      s.toUpperCase();
+      if (s.indexOf(binKeys[o]) >= 0) {
+        if (servicesLine.length() > 0)
+          servicesLine += ", ";
+        servicesLine += binKeys[o];
+        Serial.printf("  Matched bin: %s from service: %s\n", binKeys[o],
+                      s.c_str());
+        break;
+      }
+    }
+  }
+  Serial.printf("servicesLine: [%s]\n", servicesLine.c_str());
 
   // 1. SIDE BAR (Time or Error indicator)
   int sideBarW = 26; // Smaller width (was 34)

@@ -1,7 +1,7 @@
 #include "WebServerHandler.h"
-#include <ElegantOTA.h>
 #include <LittleFS.h>
-
+#include <Update.h>
+#include <WiFi.h>
 
 WebServerHandler::WebServerHandler(ConfigManager *config,
                                    ZhsunycoMaster *bleCaller,
@@ -17,7 +17,6 @@ void WebServerHandler::begin() {
   }
 
   _setupRoutes();
-  ElegantOTA.begin(&_server);
   _server.begin();
   Serial.println("Web Server Started");
 }
@@ -25,6 +24,7 @@ void WebServerHandler::begin() {
 void WebServerHandler::_setupRoutes() {
   // Serve Static Files
   _server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  _server.serveStatic("/update", LittleFS, "/update.html");
 
   // Silence Favicon
   _server.on("/favicon.ico", HTTP_GET,

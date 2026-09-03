@@ -219,22 +219,15 @@ void WifiHandler::loop() {
         _display->setTextColor(TFT_WHITE);
         _display->setTextSize(1);
         _display->println("Manage at:");
-        _display->setCursor(10, 112);
-        _display->setTextColor(TFT_YELLOW);
-        == == == =
-
-                     // Redraw Time Value
-            char timeBuf[10];
-        strftime(timeBuf, 10, "%H:%M", &timeinfo);
-        _display->setTextColor(TFT_WHITE); // White
->>>>>>> c472e7f (Add WiFi auto-reconnect and E-Ink error indicators)
         _display->setTextSize(2);
-        _display->drawString(timeBuf, 170, 30);
-
-        // Reset Datum for other draws?
-        _display->setTextDatum(top_left);
+        _display->println(WiFi.localIP());
       }
     }
+
+    _display->drawFastHLine(0, 150, 320, TFT_BLACK);
+
+    // Reset Datum for other draws?
+    _display->setTextDatum(top_left);
   }
 }
 
