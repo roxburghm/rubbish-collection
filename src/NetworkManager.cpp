@@ -207,27 +207,10 @@ void WifiHandler::loop() {
           _display->drawString(timeBuf, 170, 30);
         }
 
-        _display->setTextDatum(top_left); // Reset
-        _display->setCursor(10, 60);
-        _display->setTextColor(TFT_WHITE);
-        _display->setTextSize(1);
-        _display->println("Network SSID");
-        _display->setCursor(10, 72);
-        _display->setTextColor(TFT_CYAN); // Pop color
-        _display->setTextSize(2);
-        _display->println(WiFi.SSID());
-        _display->setTextColor(TFT_WHITE);
-        _display->setTextSize(1);
-        _display->println("Manage at:");
-        _display->setTextSize(2);
-        _display->println(WiFi.localIP());
+        // Reset Datum for other draws
+        _display->setTextDatum(top_left);
       }
     }
-
-    _display->drawFastHLine(0, 150, 320, TFT_BLACK);
-
-    // Reset Datum for other draws?
-    _display->setTextDatum(top_left);
   }
 }
 
