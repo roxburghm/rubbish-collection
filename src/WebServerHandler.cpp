@@ -181,7 +181,11 @@ void WebServerHandler::_setupRoutes() {
   _server.on("/api/test", HTTP_POST, [this](AsyncWebServerRequest *request) {
     if (request->hasParam("mac", true)) {
       String mac = request->getParam("mac", true)->value();
-      _scheduler->requestTestPattern(mac);
+      String type = "pattern";
+      if (request->hasParam("type", true)) {
+        type = request->getParam("type", true)->value();
+      }
+      _scheduler->requestTestPattern(mac, type);
       request->send(200, "text/plain", "Test Queued");
     } else {
       request->send(400, "text/plain", "Missing mac");

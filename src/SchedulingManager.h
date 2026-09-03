@@ -5,7 +5,6 @@
 #include "ZhsunycoMaster.h"
 #include <Arduino.h>
 
-
 #include <map>
 #include <vector>
 
@@ -30,7 +29,7 @@ public:
 
   // Thread-safe request methods (safe to call from async web handlers)
   void requestForceUpdate();
-  void requestTestPattern(String mac);
+  void requestTestPattern(String mac, String type = "pattern");
   void requestTriggerDevice(String mac);
   void requestRemoveDevice(String mac);
 
@@ -58,6 +57,7 @@ private:
   // Request queue (set by web handlers, consumed by loop)
   bool _forceUpdateRequested = false;
   String _testPatternRequestMac = "";
+  String _testPatternRequestType = "";
   std::vector<String> _pendingTriggerMacs;
   std::vector<String> _pendingRemoveMacs;
 
@@ -67,6 +67,6 @@ private:
   void
   _generateAndSendImage(JsonDocument &data, String targetMac,
                         SystemErrorState errorState = SystemErrorState::NONE);
-  void _sendTestPattern(String mac);
+  void _sendTestPattern(String mac, String type);
   void _scanForDevices();
 };

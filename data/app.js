@@ -319,6 +319,12 @@ function renderDevices(devices) {
                     </svg>
                 </button>
                 <div class="actions">
+                    <select id="test-type-${mac}" style="font-size: 0.8em; padding: 2px;">
+                        <option value="pattern">Pattern</option>
+                        <option value="hello">Hello</option>
+                        <option value="wifi">No WiFi</option>
+                        <option value="api">API Err</option>
+                    </select>
                     <button class="small" onclick="testDevice('${mac}', this)">Test</button>
                     <button class="small danger" onclick="removeDevice('${mac}', this)">Rem</button>
                 </div>
@@ -340,14 +346,16 @@ async function removeDevice(mac, btn) {
 }
 
 async function testDevice(mac, btn) {
-    if (!confirm("Send Test Pattern to " + mac + "?")) return;
+    const selector = document.getElementById('test-type-' + mac);
+    const type = selector ? selector.value : 'pattern';
+    if (!confirm("Send " + type + " test to " + mac + "?")) return;
     setLoading(btn, true);
 
     try {
         const res = await fetch('/api/test', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: `mac=${encodeURIComponent(mac)}`
+            body: `mac=${encodeURIComponent(mac)}&type=${encodeURIComponent(type)}`
         });
 
         if (!res.ok) {

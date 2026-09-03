@@ -16,9 +16,10 @@ void SchedulingManager::requestForceUpdate() {
   xSemaphoreGive(_mutex);
 }
 
-void SchedulingManager::requestTestPattern(String mac) {
+void SchedulingManager::requestTestPattern(String mac, String type) {
   xSemaphoreTake(_mutex, portMAX_DELAY);
   _testPatternRequestMac = mac;
+  _testPatternRequestType = type;
   xSemaphoreGive(_mutex);
 }
 
@@ -188,6 +189,7 @@ void SchedulingManager::loop() {
   // 1. Consume request flags (under mutex)
   bool doForce = false;
   String testMac = "";
+  String testType = "";
   std::vector<String> triggers;
   std::vector<String> removes;
 
@@ -195,7 +197,9 @@ void SchedulingManager::loop() {
   doForce = _forceUpdateRequested;
   _forceUpdateRequested = false;
   testMac = _testPatternRequestMac;
+  testType = _testPatternRequestType;
   _testPatternRequestMac = "";
+  _testPatternRequestType = "";
   triggers.swap(_pendingTriggerMacs);
   removes.swap(_pendingRemoveMacs);
   xSemaphoreGive(_mutex);
@@ -227,7 +231,7 @@ void SchedulingManager::loop() {
 
   // 3. Test pattern request (blocking BLE, runs on main loop task)
   if (testMac.length() > 0) {
-    _sendTestPattern(testMac);
+    _sendTestPattern(testMac, testType);
   }
 
   // 4. Boot check
@@ -774,7 +778,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   sprite.deleteSprite();
 }
 
-void SchedulingManager::_sendTestPattern(String mac) {
+void SchedulingManager::_sendTestPattern(String mac, String type) {
   const int W = 296;
   const int H = 128;
 
@@ -784,32 +788,50 @@ void SchedulingManager::_sendTestPattern(String mac) {
 
   sprite.fillSprite(TFT_WHITE);
 
-  // Draw Checkerboard
-  int sq = 16;
-  for (int y = 0; y < H; y += sq) {
-    for (int x = 0; x < W; x += sq) {
-      if (((x / sq) + (y / sq)) % 2 == 0) {
-        sprite.fillRect(x, y, sq, sq, TFT_LIGHTGREY);
+  if (type == "wifi") {
+    _generateAndSendImage(_lastData, mac, SystemErrorState::NO_WIFI);
+    return;
+  }
+  if (type == "api") {
+    _generateAndSendImage(_lastData, mac, SystemErrorState::API_ERROR);
+    return;
+  }
+  if (type == "hello") {
+    sprite.setTextColor(TFT_BLACK);
+    sprite.setTextDatum(middle_center);
+    sprite.setTextSize(3);
+    sprite.drawString("HELLO WORLD!", W / 2, H / 2);
+    // Draw red border to check alignment
+    sprite.drawRect(0, 0, W, H, TFT_RED);
+
+  } else {
+    // Draw Checkerboard (Default "pattern" type)
+    int sq = 16;
+    for (int y = 0; y < H; y += sq) {
+      for (int x = 0; x < W; x += sq) {
+        if (((x / sq) + (y / sq)) % 2 == 0) {
+          sprite.fillRect(x, y, sq, sq, TFT_LIGHTGREY);
+        }
       }
     }
+
+    // Red border
+    sprite.drawRect(0, 0, W, H, TFT_RED);
+    sprite.drawRect(1, 1, W - 2, H - 2, TFT_RED);
+
+    // Text
+    sprite.fillRoundRect(20, 20, W - 40, H - 40, 10, TFT_WHITE);
+    sprite.drawRoundRect(20, 20, W - 40, H - 40, 10, TFT_BLACK);
+
+    sprite.setTextColor(TFT_BLACK);
+    sprite.setTextSize(3);
+    sprite.setTextDatum(middle_center);
+    sprite.drawString("TEST PATTERN", W / 2, H / 2 - 15);
+
+    sprite.setTextSize(1);
+    sprite.setTextColor(TFT_RED);
+    sprite.drawString(mac, W / 2, H / 2 + 20);
   }
-
-  // Red border
-  sprite.drawRect(0, 0, W, H, TFT_RED);
-  sprite.drawRect(1, 1, W - 2, H - 2, TFT_RED);
-
-  // Text
-  sprite.fillRoundRect(20, 20, W - 40, H - 40, 10, TFT_WHITE);
-  sprite.drawRoundRect(20, 20, W - 40, H - 40, 10, TFT_BLACK);
-
-  sprite.setTextColor(TFT_BLACK);
-  sprite.setTextSize(3);
-  sprite.setTextDatum(middle_center);
-  sprite.drawString("TEST PATTERN", W / 2, H / 2 - 15);
-
-  sprite.setTextSize(1);
-  sprite.setTextColor(TFT_RED);
-  sprite.drawString(mac, W / 2, H / 2 + 20);
 
   // Extraction
   int bufSize = W * H;
