@@ -37,6 +37,19 @@ int cadenceFromSchedule(const String &sched) {
 
 // The council only ever returns the NEXT date per service, so a weekly stream
 // would otherwise vanish from every repeat after the first.
+// Largest face in `faces` (widest first) whose rendering of `s` fits `maxW`.
+// Leaves that face selected. Guessing at GFX advance widths has burned us
+// repeatedly; measuring does not.
+const lgfx::IFont *pickFont(lgfx::LovyanGFX &g, const String &s, int maxW,
+                            const lgfx::IFont *const *faces, int count) {
+  for (int i = 0; i < count; i++) {
+    g.setFont(faces[i]);
+    if (g.textWidth(s) <= maxW) return faces[i];
+  }
+  g.setFont(faces[count - 1]);
+  return faces[count - 1];
+}
+
 bool collectsOnDate(time_t serviceEpoch, int cadence, time_t targetEpoch) {
   if (serviceEpoch == 0 || targetEpoch == 0) return false;
   double diff = difftime(targetEpoch, serviceEpoch) / 86400.0;
@@ -671,10 +684,23 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
 
   // Footer sits on the bottom edge rather than floating. The update stamp
   // shares its baseline so the two read as one line across the whole tag.
-  const int HEAD_TEXT_Y = 10;      // 8px glyphs
-  const int HEAD_RULE_Y = 23;
-  const int FOOT_TEXT_Y = H - 16;  // 112: 8px glyphs, 8px bottom margin
-  const int FOOT_RULE_Y = H - 22;  // 106
+  // Header, footer and stamp all step down through these until they fit.
+  // The 6x8 built-in is the floor, not the default: at one pixel per stroke
+  // it reads spindly on e-ink next to the bold stream names.
+  static const lgfx::IFont *const SMALL_FACES[] = {
+      &fonts::FreeSansBold9pt7b, &fonts::Font2, &fonts::Font0};
+  const int SMALL_FACE_COUNT = 3;
+
+  // Measure the tallest small face once and lay the bands out from that,
+  // rather than hard-coding offsets that only suit one font.
+  sprite.setTextSize(1);
+  sprite.setFont(&fonts::FreeSansBold9pt7b);
+  const int SMALL_H = sprite.fontHeight();
+
+  const int HEAD_TEXT_Y = 7;
+  const int HEAD_RULE_Y = HEAD_TEXT_Y + SMALL_H + 3;
+  const int FOOT_TEXT_Y = H - SMALL_H - 6;
+  const int FOOT_RULE_Y = FOOT_TEXT_Y - 5;
   const int STREAM_TOP = HEAD_RULE_Y + 5;
   const int STREAM_BOT = FOOT_RULE_Y - 2;
 
@@ -813,8 +839,8 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   // message; this line only says which kind of day it is.
   sprite.setTextDatum(top_left);
   sprite.setTextColor(redAction || hasError ? TFT_RED : TFT_BLACK);
-  sprite.setFont(nullptr);
   sprite.setTextSize(1);
+  pickFont(sprite, actionLine, BODY_W, SMALL_FACES, SMALL_FACE_COUNT);
   sprite.drawString(fitText(sprite, actionLine, BODY_W), BODY_X, HEAD_TEXT_Y);
   sprite.drawFastHLine(BODY_X, HEAD_RULE_Y, BODY_W,
                        redAction || hasError ? TFT_RED : TFT_BLACK);
@@ -894,11 +920,16 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   // --- footer: everything not going out that day ---
   sprite.drawFastHLine(BODY_X, FOOT_RULE_Y, BODY_W, TFT_BLACK);
 
-  sprite.setFont(nullptr); // 6x8 default face — small, and crisp on e-ink
   sprite.setTextSize(1);
   sprite.setTextColor(TFT_BLACK);
 
-  int footX = BODY_X;
+  // Group the leftovers by date. "RECYCLE, GARDEN 14/09" says the same as
+  // "RECYCLE 14/09  GARDEN 14/09" in a third fewer characters, which buys a
+  // bigger, less spindly face.
+  String footDates[4];
+  String footNames[4];
+  int footCount = 0;
+
   for (int o = 0; o < 4; o++) {
     for (JsonVariant v : serviceList) {
       String s = v["Service"].as<String>();
@@ -910,13 +941,32 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
                          cadenceFromSchedule(v["collectionSchedule"].as<String>()),
                          parseDMY(nextDate))) break; // already named above
 
-      String entry = String(gridShort[o]) + " " + d.substring(0, 5);
-      int entryW = entry.length() * 6;
-      if (footX + entryW > W - 10) break; // never run off the edge
-      sprite.drawString(entry, footX, FOOT_TEXT_Y);
-      footX += entryW + 10;
+      String dm = d.substring(0, 5);
+      int slot = -1;
+      for (int k = 0; k < footCount; k++) {
+        if (footDates[k] == dm) { slot = k; break; }
+      }
+      if (slot < 0) {
+        slot = footCount++;
+        footDates[slot] = dm;
+        footNames[slot] = gridShort[o];
+      } else {
+        footNames[slot] += ", ";
+        footNames[slot] += gridShort[o];
+      }
       break;
     }
+  }
+
+  String footLine = "";
+  for (int k = 0; k < footCount; k++) {
+    if (footLine.length()) footLine += "   ";
+    footLine += footNames[k] + " " + footDates[k];
+  }
+
+  if (footLine.length()) {
+    pickFont(sprite, footLine, BODY_W, SMALL_FACES, SMALL_FACE_COUNT);
+    sprite.drawString(fitText(sprite, footLine, BODY_W), BODY_X, FOOT_TEXT_Y);
   }
 
   // Update stamp: the time of the last successful COUNCIL FETCH, not of this
@@ -935,10 +985,10 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     localtime_r(&stampEpoch, &stampTm);
     char stamp[16];
     strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &stampTm);
-    sprite.setFont(nullptr);
     sprite.setTextSize(1);
     sprite.setTextColor(TFT_WHITE);
     sprite.setTextDatum(top_center);
+    pickFont(sprite, String(stamp), DATE_W - 8, SMALL_FACES, SMALL_FACE_COUNT);
     sprite.drawString(stamp, DATE_W / 2, FOOT_TEXT_Y);
     sprite.setTextDatum(top_left);
   }

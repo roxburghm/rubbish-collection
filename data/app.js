@@ -511,7 +511,16 @@ function renderTagInner(st, actOverride, forceRed, stamp) {
     if (!st) return '<div class="tag-stale">NO SCHEDULE</div>';
 
     const lines = tagLines(st.due).map(l => `<b>${l}</b>`).join('');
-    const foot = st.later.map(s => `<span>${s.def.short} ${ddmm(s.date)}</span>`).join('');
+    // Group leftovers sharing a date, matching the tag: "RECYCLE, GARDEN 14/09"
+    // rather than repeating the date for each stream.
+    const byDate = [];
+    st.later.forEach(s => {
+        const key = ddmm(s.date);
+        const hit = byDate.find(g => g.date === key);
+        if (hit) hit.names.push(s.def.short);
+        else byDate.push({ date: key, names: [s.def.short] });
+    });
+    const foot = byDate.map(g => `<span>${g.names.join(', ')} ${g.date}</span>`).join('');
     const act = actOverride || st.tagAct;
     const actRed = forceRed || st.actRed;
     // An error frame never floods the date block: red belongs to one thing
