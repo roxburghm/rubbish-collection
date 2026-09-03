@@ -851,6 +851,7 @@ function renderDevices(force) {
         // We cannot read a tag back, so this is the last frame we sent it.
         let preview, caption;
         const stamp = d.lastSuccess > 0 ? fmtStamp(d.lastSuccess) : '';
+        const name = escapeHtml(d.name || '');
 
         // Real upcoming collections, so you can send next week's label today.
         const dayOptions = upcoming.length ? '<optgroup label="Preview a real collection">' +
@@ -871,9 +872,9 @@ function renderDevices(force) {
         return `
         <article class="label-card${state.cls === 'fail' ? ' attention' : ''}">
             <div class="lc-head">
-                <div>
-                    <span class="nm mono">${mac}</span>
-                    <span class="sub">E-ink label</span>
+                <div class="lc-id">
+                    <span class="nm">${name || mac}</span>
+                    <span class="sub mono">${name ? mac : 'Unnamed label'}</span>
                 </div>
                 <span class="state ${state.cls}">${state.text}</span>
             </div>
@@ -887,11 +888,21 @@ function renderDevices(force) {
             <div class="preview-zone">
                 <span class="eyebrow" id="cap-${id}">${caption}</span>
                 <div class="tag${rotate ? ' flipped' : ''}" id="tag-${id}"
-                     data-stamp="${stamp}"
+                     data-mac="${mac}" data-stamp="${stamp}"
                      data-written="${d.lastSuccess > 0 ? 1 : 0}">${preview}</div>
             </div>
 
             <div class="lc-actions">
+                <div class="field">
+                    <label for="name-${id}">Name</label>
+                    <div class="row">
+                        <input type="text" id="name-${id}" class="grow" maxlength="24"
+                               placeholder="Kitchen, Side gate…" value="${name}">
+                        <button class="btn" type="button"
+                                onclick="saveName('${mac}', '${id}', this)">Save</button>
+                    </div>
+                </div>
+
                 <div class="field">
                     <span class="flabel" id="rot-${id}">Orientation</span>
                     <div class="seg" role="group" aria-labelledby="rot-${id}">
@@ -938,9 +949,10 @@ function renderDevices(force) {
         if (!s) return;
         s.value = chosen[selectId];
         const id = selectId.slice('send-'.length);
-        const card = s.closest('.label-card');
-        const macEl = card ? card.querySelector('.nm') : null;
-        previewFrame(macEl ? macEl.textContent : '', id);
+        // Read the MAC off the tag, not off the title — the title is the
+        // friendly name now, and the test-pattern frame prints the MAC.
+        const tag = el('tag-' + id);
+        previewFrame(tag ? tag.dataset.mac || '' : '', id);
     });
 }
 
@@ -1060,6 +1072,29 @@ async function saveAddress() {
         say('config-toast', 'Could not save the property.', true);
     } finally {
         setLoading(btn, false, 'Save property');
+    }
+}
+
+/* Renaming never touches the tag — the name is for the dashboard only, so
+   there is no reason to wake a label over it. */
+async function saveName(mac, id, btn) {
+    const input = el('name-' + id);
+    if (!input) return;
+
+    setLoading(btn, true);
+    try {
+        const res = await fetch('/api/device/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mac: mac, name: input.value.trim() })
+        });
+        if (!res.ok) throw new Error('rename failed');
+        say('toast-' + id, 'Name saved');
+        loadDevices();
+    } catch (e) {
+        say('toast-' + id, 'Could not save the name', true);
+    } finally {
+        setLoading(btn, false, 'Save');
     }
 }
 

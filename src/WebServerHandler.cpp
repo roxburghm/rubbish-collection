@@ -83,15 +83,26 @@ void WebServerHandler::_setupRoutes() {
         }
 
         String mac = doc["mac"];
-        bool rotate = doc["rotate"];
 
-        if (mac.length() > 0) {
-          _config->setDeviceRotation(mac, rotate);
-          _scheduler->requestTriggerDevice(mac);
-          request->send(200, "text/plain", "OK");
-        } else {
+        if (mac.length() == 0) {
           request->send(400, "text/plain", "Bad Request");
+          return;
         }
+
+        // Rotation changes the frame, so it needs a rewrite. A rename does
+        // not appear on the tag at all, so it must not wake one.
+        bool needsRedraw = false;
+
+        if (doc["rotate"].is<bool>()) {
+          _config->setDeviceRotation(mac, doc["rotate"].as<bool>());
+          needsRedraw = true;
+        }
+        if (doc["name"].is<const char *>()) {
+          _config->setDeviceName(mac, doc["name"].as<String>());
+        }
+
+        if (needsRedraw) _scheduler->requestTriggerDevice(mac);
+        request->send(200, "text/plain", "OK");
       });
 
   // API: Add Device

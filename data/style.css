@@ -621,8 +621,9 @@ p { margin: 0; }
 
 .label-card.attention { border-color: var(--red); }
 .lc-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 15px 12px; }
-.lc-head .nm { font-family: var(--font-display); font-weight: 600; font-size: var(--step-1); line-height: 1.2; overflow-wrap: anywhere; }
-.lc-head .sub { font-size: var(--step--1); color: var(--ink-3); display: block; margin-top: 3px; }
+.lc-id { min-width: 0; }
+.lc-head .nm { font-family: var(--font-display); font-weight: 600; font-size: var(--step-1); line-height: 1.2; overflow-wrap: anywhere; display: block; }
+.lc-head .sub { font-size: var(--step--1); color: var(--ink-3); display: block; margin-top: 3px; overflow-wrap: anywhere; }
 
 .state {
     margin-left: auto;

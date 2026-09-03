@@ -14,8 +14,15 @@ public:
     ZhsunycoMaster();
     void begin();
     
-    // Scan and return list of found tags (MAC addresses)
+    // Scan and return list of found tags (MAC addresses). Blocks for the
+    // whole duration — used where a result is needed immediately.
     std::vector<String> scanTags(int durationStr = 5);
+
+    // Non-blocking form: kick it off, poll scanBusy(), then harvest. The
+    // periodic visibility sweep uses this so it does not stall the loop.
+    void beginScan(int durationSec);
+    bool scanBusy();
+    std::vector<String> harvestScan();
     
     // Connect to a tag and update its image
     // Pass two buffers: black/white and red. 

@@ -77,17 +77,54 @@ void ConfigManager::removeDevice(String mac) {
     _prefs.putString("devices", output);
 }
 
+// to<JsonObject>() replaces whatever was there, so reaching for it
+// unconditionally would have rotation wipe the name and vice versa.
+static JsonObject deviceEntry(JsonDocument &doc, const String &mac) {
+    if (doc[mac].is<JsonObject>()) return doc[mac].as<JsonObject>();
+    return doc[mac].to<JsonObject>();
+}
+
 void ConfigManager::setDeviceRotation(String mac, bool rotate) {
     String current = _prefs.getString("device_cfgs", "{}");
     JsonDocument doc;
     deserializeJson(doc, current);
-    
-    JsonObject obj = doc[mac].to<JsonObject>();
-    obj["rot"] = rotate;
-    
+
+    deviceEntry(doc, mac)["rot"] = rotate;
+
     String output;
     serializeJson(doc, output);
     _prefs.putString("device_cfgs", output);
+}
+
+void ConfigManager::setDeviceName(String mac, String name) {
+    String current = _prefs.getString("device_cfgs", "{}");
+    JsonDocument doc;
+    deserializeJson(doc, current);
+
+    name.trim();
+    if (name.length() > 24) name = name.substring(0, 24);
+
+    if (name.length() == 0) {
+        // Clearing the name falls the card back to showing the MAC.
+        if (doc[mac].is<JsonObject>()) doc[mac].remove("name");
+    } else {
+        deviceEntry(doc, mac)["name"] = name;
+    }
+
+    String output;
+    serializeJson(doc, output);
+    _prefs.putString("device_cfgs", output);
+}
+
+String ConfigManager::getDeviceName(String mac) {
+    String current = _prefs.getString("device_cfgs", "{}");
+    JsonDocument doc;
+    deserializeJson(doc, current);
+
+    if (doc[mac].is<JsonObject>() && doc[mac]["name"].is<const char *>()) {
+        return doc[mac]["name"].as<String>();
+    }
+    return "";
 }
 
 bool ConfigManager::getDeviceRotation(String mac) {

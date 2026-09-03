@@ -193,6 +193,7 @@ String SchedulingManager::getDeviceStatusJson() {
     String mac = v.as<String>();
     JsonObject obj = outArr.add<JsonObject>();
     obj["mac"] = mac;
+    obj["name"] = _config->getDeviceName(mac);
     obj["rotate"] = _config->getDeviceRotation(mac);
 
     if (_deviceStatuses.count(mac)) {
@@ -224,9 +225,11 @@ String SchedulingManager::getDeviceStatusJson() {
 
 // --- Internal: periodic BLE scan to track device visibility ---
 
+// Consumes whatever the background sweep collected. The scan itself is
+// started from loop() and never waited on: at 15 seconds blocking, it used to
+// stall the scheduler and freeze the console clock every three minutes.
 void SchedulingManager::_scanForDevices() {
-  Serial.println("BLE: Scanning for registered devices (15s)...");
-  std::vector<String> found = _ble->scanTags(15);
+  std::vector<String> found = _ble->harvestScan();
 
   String configJson = _config->getDevicesJson();
   JsonDocument doc;
@@ -288,10 +291,21 @@ void SchedulingManager::loop() {
     xSemaphoreGive(_mutex);
   }
 
-  // 0. Periodic device visibility scan (every 3 minutes)
+  // 0. Periodic device visibility sweep, started and left to run. loop()
+  //    keeps turning while it does; the results are picked up whenever it
+  //    finishes, or early if a tag write cut it short.
   static unsigned long lastScanMillis = 0;
-  if (millis() - lastScanMillis > 180000) {
+  static bool scanRunning = false;
+
+  if (!scanRunning && millis() - lastScanMillis > 180000) {
     lastScanMillis = millis();
+    scanRunning = true;
+    Serial.println("BLE: visibility sweep started");
+    _ble->beginScan(12);
+  }
+
+  if (scanRunning && !_ble->scanBusy()) {
+    scanRunning = false;
     _scanForDevices();
   }
 

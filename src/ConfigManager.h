@@ -25,9 +25,13 @@ public:
     void removeDevice(String mac);
     String getDevicesJson(); // Returns ["MAC1", "MAC2"]
     
-    // Per-Device Config (Rotation)
+    // Per-Device Config (Rotation, friendly name)
     void setDeviceRotation(String mac, bool rotate);
     bool getDeviceRotation(String mac);
+
+    // A label called "Kitchen" is findable; A4:C1:38:7E:2B:09 is not.
+    void setDeviceName(String mac, String name);
+    String getDeviceName(String mac);
 
     void setPropertyName(String name);
     String getPropertyName();

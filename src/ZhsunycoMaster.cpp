@@ -61,6 +61,32 @@ std::vector<String> ZhsunycoMaster::scanTags(int durationSec) {
     return foundTags;
 }
 
+void ZhsunycoMaster::beginScan(int durationSec) {
+    if (_scan->isScanning()) return;
+    _scan->clearResults();
+    _scan->start(durationSec * 1000, false); // returns immediately
+}
+
+bool ZhsunycoMaster::scanBusy() { return _scan->isScanning(); }
+
+// Whatever the scan has collected so far. Safe to call early: a connect will
+// have cut the scan short, and partial visibility data is fine.
+std::vector<String> ZhsunycoMaster::harvestScan() {
+    std::vector<String> foundTags;
+    NimBLEScanResults results = _scan->getResults();
+
+    for (int i = 0; i < results.getCount(); i++) {
+        const NimBLEAdvertisedDevice* device = results.getDevice(i);
+        if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
+            String mac = String(device->getAddress().toString().c_str());
+            _recordRssi(mac, device->getRSSI());
+            foundTags.push_back(mac);
+        }
+    }
+    _scan->clearResults();
+    return foundTags;
+}
+
 // MAC keys are normalised to lowercase: NimBLE renders addresses lowercase but
 // MACs entered through the dashboard are typically uppercase.
 void ZhsunycoMaster::_recordRssi(const String& mac, int rssi) {
@@ -292,6 +318,11 @@ bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const
 }
 
 bool ZhsunycoMaster::connect(NimBLEAddress address) {
+    // A background visibility sweep may be running. NimBLE cannot scan and
+    // connect at once, so stand it down first; whatever it found so far is
+    // still in the results and gets harvested on the next loop.
+    if (_scan->isScanning()) _scan->stop();
+
     // Clean up any existing client to avoid exhausting the NimBLE client pool
     if (_client != nullptr) {
         if (_client->isConnected()) {
