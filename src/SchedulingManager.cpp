@@ -863,10 +863,12 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     // agnostic, and self-correcting if the face ever changes.
     const int GAP = 9;
     const int LBL_H = 13;               // 9pt cap height
-    // Centre against the stamp, not against the body's footer rule: that rule
-    // is only drawn across the right-hand column, so in the date block the
-    // usable space actually runs all the way down to the stamp.
-    const int STACK_BOT = FOOT_TEXT_Y - 3;
+    // Centre against the stamp, not the body's footer rule: that rule is only
+    // drawn across the right-hand column, so the usable space in the date
+    // block runs all the way down to the stamp. Measured on hardware, the
+    // arbitrary 3px inset here left 9px of air above the stack against 13px
+    // below it; centring on the stamp line makes both 13.
+    const int STACK_BOT = FOOT_TEXT_Y;
 
     String dayStr = String(nextTm.tm_mday);
     int nominal = STACK_BOT / 2;
