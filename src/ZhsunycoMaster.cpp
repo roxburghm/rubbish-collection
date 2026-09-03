@@ -172,9 +172,6 @@ bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const
     std::vector<uint8_t> comp_bw = compressRLE(bwBitmap, numPixels, packed);
     std::vector<uint8_t> comp_red = compressRLE(redBitmap, numPixels, packed);
 
-    String hex_bw = bytesToHex(comp_bw);
-    String hex_red = bytesToHex(comp_red);
-
     int h_minus_1 = height - 1;
     int w_minus_1 = width - 1;
 
@@ -184,14 +181,23 @@ bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const
     char headerPart2[100];
     sprintf(headerPart2, "FC8%03X%04X8%03X%04X%08X", 0, 0, h_minus_1, w_minus_1, (int)comp_red.size());
 
-    String fullPayloadHex = String(headerPart1) + hex_bw + String(headerPart2) + hex_red;
+    // The compressed data used to be rendered to a hex string and parsed
+    // straight back into the same bytes — an identity round trip that cost
+    // three full copies of the payload plus a heap-allocated String per byte.
+    // Only the two 26-character headers actually need converting.
+    auto appendHex = [](std::vector<uint8_t>& out, const char* hex) {
+        for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) {
+            char pair[3] = { hex[i], hex[i + 1], 0 };
+            out.push_back((uint8_t) strtol(pair, NULL, 16));
+        }
+    };
 
-    // Convert hex string to bytes
     std::vector<uint8_t> payload;
-    for (unsigned int i = 0; i < fullPayloadHex.length(); i += 2) {
-        String byteString = fullPayloadHex.substring(i, i + 2);
-        payload.push_back((uint8_t) strtol(byteString.c_str(), NULL, 16));
-    }
+    payload.reserve(13 + comp_bw.size() + 13 + comp_red.size());
+    appendHex(payload, headerPart1);
+    payload.insert(payload.end(), comp_bw.begin(), comp_bw.end());
+    appendHex(payload, headerPart2);
+    payload.insert(payload.end(), comp_red.begin(), comp_red.end());
 
     // Encryption Key
     uint8_t macXor = 0;

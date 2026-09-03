@@ -882,11 +882,22 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     }
   }
 
-  // Update stamp, closing the date stack. Small: it answers "is this tag
-  // stale?" and nothing more.
-  if (timeKnown) {
+  // Update stamp: the time of the last successful COUNCIL FETCH, not of this
+  // render. Render time would change every minute, so the unchanged-frame
+  // check below could never fire and tags would be rewritten on a timer
+  // forever. Fetch time changes at the four daily poll boundaries, which
+  // caps this at four writes a day while still answering the question the
+  // stamp is there for: how fresh is what I am looking at.
+  time_t stampEpoch;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  stampEpoch = _lastUpdateEpoch;
+  xSemaphoreGive(_mutex);
+
+  if (stampEpoch > 0) {
+    struct tm stampTm;
+    localtime_r(&stampEpoch, &stampTm);
     char stamp[16];
-    strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &timeinfo);
+    strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &stampTm);
     sprite.setFont(nullptr);
     sprite.setTextSize(1);
     sprite.setTextColor(TFT_WHITE);
@@ -948,6 +959,39 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     }
   }
 
+  // Hash the finished frame, not the council JSON. What matters is whether
+  // the tag would end up showing anything different — and most days it would
+  // not, because the header carries a date rather than a countdown. Waking a
+  // tag over BLE and running a full e-ink refresh to redraw identical pixels
+  // is the most expensive thing this system does.
+  uint32_t h = 2166136261u; // FNV-1a
+  for (int i = 0; i < bufSize; i++) h = (h ^ bwBuf[i]) * 16777619u;
+  for (int i = 0; i < bufSize; i++) h = (h ^ redBuf[i]) * 16777619u;
+  String frameHash = String(h, HEX);
+
+  // Previews are explicitly requested, so they always go out even if the
+  // pixels match what is already on the tag.
+  bool isPreview = (daysOverride >= 0 || previewDate.length() > 0);
+  bool unchanged = false;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  unchanged = !isPreview && _deviceStatuses[targetMac].lastResult &&
+              _deviceStatuses[targetMac].lastDataHash == frameHash;
+  if (unchanged) {
+    _deviceStatuses[targetMac].pendingUpdate = false;
+    _deviceStatuses[targetMac].retryCount = 0;
+    _deviceStatuses[targetMac].nextRetryTime = 0;
+  }
+  xSemaphoreGive(_mutex);
+
+  if (unchanged) {
+    Serial.printf("Skipping %s: frame unchanged (%s)\n", targetMac.c_str(),
+                  frameHash.c_str());
+    free(bwBuf);
+    free(redBuf);
+    sprite.deleteSprite();
+    return;
+  }
+
   Serial.print("Updating ");
   Serial.print(targetMac);
   Serial.print(" ... ");
@@ -975,9 +1019,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     _deviceStatuses[targetMac].pendingUpdate = false;
     _deviceStatuses[targetMac].retryCount = 0;
 
-    String newDataStr;
-    serializeJson(data["param2"], newDataStr);
-    _deviceStatuses[targetMac].lastDataHash = newDataStr;
+    _deviceStatuses[targetMac].lastDataHash = frameHash;
 
   } else {
     Serial.println("FAIL");
