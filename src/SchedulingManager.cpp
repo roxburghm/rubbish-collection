@@ -64,6 +64,65 @@ SchedulingManager::SchedulingManager(CouncilClient *api, ZhsunycoMaster *ble,
                                      ConfigManager *config, LGFX *display)
     : _api(api), _ble(ble), _config(config), _display(display) {
   _mutex = xSemaphoreCreateMutex();
+  _writeQueue = xQueueCreate(8, sizeof(WriteJob));
+  xTaskCreate(_writerTrampoline, "BLEWriter", 8192, this, 1, NULL);
+}
+
+void SchedulingManager::_writerTrampoline(void *self) {
+  static_cast<SchedulingManager *>(self)->_writerLoop();
+}
+
+bool SchedulingManager::_enqueueWrite(const String &mac, const String &type) {
+  WriteJob job = {};
+  strncpy(job.mac, mac.c_str(), sizeof(job.mac) - 1);
+  strncpy(job.type, type.c_str(), sizeof(job.type) - 1);
+
+  if (xQueueSend(_writeQueue, &job, 0) != pdTRUE) {
+    Serial.printf("BLE queue full, dropping %s (%s)\n", job.mac, job.type);
+    return false;
+  }
+  return true;
+}
+
+// The only task that touches BLE. Everything here is free to block: waiting
+// on a tag to wake costs this task time and nothing else.
+void SchedulingManager::_writerLoop() {
+  unsigned long lastSweep = 0;
+
+  for (;;) {
+    WriteJob job;
+    if (xQueueReceive(_writeQueue, &job, pdMS_TO_TICKS(2000)) == pdTRUE) {
+      String mac = String(job.mac);
+      String type = String(job.type);
+
+      if (type.length() == 0) {
+        // Take the freshest schedule and error state at execution time, not
+        // at the time the job was queued.
+        JsonDocument dataCopy;
+        SystemErrorState err;
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        dataCopy = _lastData;
+        err = _currentErrorState;
+        xSemaphoreGive(_mutex);
+
+        if (!dataCopy.isNull()) _generateAndSendImage(dataCopy, mac, err);
+      } else {
+        _sendTestPattern(mac, type);
+      }
+
+      xSemaphoreTake(_mutex, portMAX_DELAY);
+      _deviceStatuses[mac].inFlight = false;
+      xSemaphoreGive(_mutex);
+      continue;
+    }
+
+    // Idle: periodic visibility sweep. Blocking is fine on this task, which
+    // is why the non-blocking scan machinery is no longer needed.
+    if (millis() - lastSweep > 180000) {
+      lastSweep = millis();
+      _scanForDevices();
+    }
+  }
 }
 
 // --- Thread-safe request methods (called from async web handlers) ---
@@ -225,11 +284,10 @@ String SchedulingManager::getDeviceStatusJson() {
 
 // --- Internal: periodic BLE scan to track device visibility ---
 
-// Consumes whatever the background sweep collected. The scan itself is
-// started from loop() and never waited on: at 15 seconds blocking, it used to
-// stall the scheduler and freeze the console clock every three minutes.
+// Runs on the BLE task, so blocking here costs nothing elsewhere.
 void SchedulingManager::_scanForDevices() {
-  std::vector<String> found = _ble->harvestScan();
+  Serial.println("BLE: visibility sweep");
+  std::vector<String> found = _ble->scanTags(12);
 
   String configJson = _config->getDevicesJson();
   JsonDocument doc;
@@ -291,23 +349,8 @@ void SchedulingManager::loop() {
     xSemaphoreGive(_mutex);
   }
 
-  // 0. Periodic device visibility sweep, started and left to run. loop()
-  //    keeps turning while it does; the results are picked up whenever it
-  //    finishes, or early if a tag write cut it short.
-  static unsigned long lastScanMillis = 0;
-  static bool scanRunning = false;
-
-  if (!scanRunning && millis() - lastScanMillis > 180000) {
-    lastScanMillis = millis();
-    scanRunning = true;
-    Serial.println("BLE: visibility sweep started");
-    _ble->beginScan(12);
-  }
-
-  if (scanRunning && !_ble->scanBusy()) {
-    scanRunning = false;
-    _scanForDevices();
-  }
+  // The visibility sweep now runs on the BLE task, between writes. loop()
+  // does not touch the radio at all.
 
   // 1. Consume request flags (under mutex)
   bool doForce = false;
@@ -352,9 +395,9 @@ void SchedulingManager::loop() {
     xSemaphoreGive(_mutex);
   }
 
-  // 3. Test pattern request (blocking BLE, runs on main loop task)
+  // 3. Test / preview request — handed to the BLE task.
   if (testMac.length() > 0) {
-    _sendTestPattern(testMac, testType);
+    _enqueueWrite(testMac, testType.length() ? testType : String("pattern"));
   }
 
   // 4. Boot check
@@ -432,17 +475,19 @@ void SchedulingManager::loop() {
 
     // Read status under mutex
     bool isPending = false;
+    bool busy = false;
     time_t retryTime = 0;
     int retryCount = 0;
 
     xSemaphoreTake(_mutex, portMAX_DELAY);
     DeviceStatus &status = _deviceStatuses[mac];
     isPending = status.pendingUpdate;
+    busy = status.inFlight;
     retryTime = status.nextRetryTime;
     retryCount = status.retryCount;
     xSemaphoreGive(_mutex);
 
-    if (isPending && now >= retryTime) {
+    if (isPending && !busy && now >= retryTime) {
       if (!hasData) {
         Serial.printf(
             "No data available for %s, will retry when data arrives.\n",
@@ -450,9 +495,19 @@ void SchedulingManager::loop() {
         continue; // Keep pendingUpdate true, skip to next device
       }
 
-      Serial.printf("Processing Pending Update for %s (Retry %d)\n",
+      Serial.printf("Queueing update for %s (Retry %d)\n",
                     mac.c_str(), retryCount);
-      _generateAndSendImage(dataCopy, mac, _currentErrorState);
+      // Claim it before queueing, so the next pass 100ms from now does not
+      // queue the same device again while this write is still running.
+      xSemaphoreTake(_mutex, portMAX_DELAY);
+      _deviceStatuses[mac].inFlight = true;
+      xSemaphoreGive(_mutex);
+
+      if (!_enqueueWrite(mac, "")) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        _deviceStatuses[mac].inFlight = false;
+        xSemaphoreGive(_mutex);
+      }
     }
   }
 
@@ -561,7 +616,10 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   const int H = 128;
 
   // Create Sprite
-  LGFX_Sprite sprite(_display);
+  // Deliberately parentless: this runs on the BLE task, and binding the
+  // sprite to _display would have two tasks poking the same LovyanGFX device.
+  // Nothing here is ever pushed to the panel — it is read back into bitmaps.
+  LGFX_Sprite sprite;
   sprite.setColorDepth(8);
   sprite.createSprite(W, H);
 
@@ -1183,7 +1241,10 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
   }
 
   // Only the self-contained frames need a sprite of our own.
-  LGFX_Sprite sprite(_display);
+  // Deliberately parentless: this runs on the BLE task, and binding the
+  // sprite to _display would have two tasks poking the same LovyanGFX device.
+  // Nothing here is ever pushed to the panel — it is read back into bitmaps.
+  LGFX_Sprite sprite;
   sprite.setColorDepth(8);
   sprite.createSprite(W, H);
   sprite.fillSprite(TFT_WHITE);

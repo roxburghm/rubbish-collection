@@ -21,6 +21,16 @@ struct DeviceStatus {
   int retryCount = 0;
   time_t nextRetryTime = 0;
   bool pendingUpdate = false;
+  // Handed to the BLE task and not yet finished. Stops loop() queueing the
+  // same device again every 100ms while its write is in flight.
+  bool inFlight = false;
+};
+
+// A unit of BLE work. Plain chars, not String: a FreeRTOS queue copies the
+// struct byte for byte, which would corrupt a String's heap bookkeeping.
+struct WriteJob {
+  char mac[20];
+  char type[24]; // empty = the normal schedule frame
 };
 
 class SchedulingManager {
@@ -66,6 +76,14 @@ private:
 
   // Mutex for shared state access
   SemaphoreHandle_t _mutex;
+
+  // BLE runs on its own task. connect() waits up to 65 seconds for a sleeping
+  // tag to advertise, and doing that on the Arduino loop task froze the
+  // console clock and stalled the web handlers for the duration.
+  QueueHandle_t _writeQueue;
+  static void _writerTrampoline(void *self);
+  void _writerLoop();
+  bool _enqueueWrite(const String &mac, const String &type);
 
   // Request queue (set by web handlers, consumed by loop)
   bool _forceUpdateRequested = false;

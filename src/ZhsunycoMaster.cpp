@@ -61,32 +61,6 @@ std::vector<String> ZhsunycoMaster::scanTags(int durationSec) {
     return foundTags;
 }
 
-void ZhsunycoMaster::beginScan(int durationSec) {
-    if (_scan->isScanning()) return;
-    _scan->clearResults();
-    _scan->start(durationSec * 1000, false); // returns immediately
-}
-
-bool ZhsunycoMaster::scanBusy() { return _scan->isScanning(); }
-
-// Whatever the scan has collected so far. Safe to call early: a connect will
-// have cut the scan short, and partial visibility data is fine.
-std::vector<String> ZhsunycoMaster::harvestScan() {
-    std::vector<String> foundTags;
-    NimBLEScanResults results = _scan->getResults();
-
-    for (int i = 0; i < results.getCount(); i++) {
-        const NimBLEAdvertisedDevice* device = results.getDevice(i);
-        if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-            String mac = String(device->getAddress().toString().c_str());
-            _recordRssi(mac, device->getRSSI());
-            foundTags.push_back(mac);
-        }
-    }
-    _scan->clearResults();
-    return foundTags;
-}
-
 // MAC keys are normalised to lowercase: NimBLE renders addresses lowercase but
 // MACs entered through the dashboard are typically uppercase.
 void ZhsunycoMaster::_recordRssi(const String& mac, int rssi) {
@@ -178,16 +152,6 @@ std::vector<uint8_t> ZhsunycoMaster::compressRLE(const uint8_t* data, size_t len
          }
      }
      return out;
-}
-
-String ZhsunycoMaster::bytesToHex(const std::vector<uint8_t>& data) {
-    String s = "";
-    char buf[3];
-    for (uint8_t b : data) {
-        sprintf(buf, "%02X", b);
-        s += buf;
-    }
-    return s;
 }
 
 bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const uint8_t* redBitmap, int width, int height, bool packed) {

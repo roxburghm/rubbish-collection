@@ -15,14 +15,8 @@ public:
     void begin();
     
     // Scan and return list of found tags (MAC addresses). Blocks for the
-    // whole duration — used where a result is needed immediately.
+    // whole duration, which is fine: every caller is on the BLE task.
     std::vector<String> scanTags(int durationStr = 5);
-
-    // Non-blocking form: kick it off, poll scanBusy(), then harvest. The
-    // periodic visibility sweep uses this so it does not stall the loop.
-    void beginScan(int durationSec);
-    bool scanBusy();
-    std::vector<String> harvestScan();
     
     // Connect to a tag and update its image
     // Pass two buffers: black/white and red. 
@@ -58,7 +52,6 @@ private:
     uint16_t crc16(const uint8_t* data, size_t len);
     std::vector<uint8_t> compressRLE(const uint8_t* data, size_t len, bool packed = false);
     uint8_t calculateKey(String macStr);
-    String bytesToHex(const std::vector<uint8_t>& data);
     
     void _recordRssi(const String& mac, int rssi);
 
