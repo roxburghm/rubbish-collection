@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Onboard screen &middot; Rubbish Console</title>
+    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+</head>
+
+<body>
+    <div class="wrap">
+
+        <div class="topbar">
+            <div class="brand">
+                <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                    stroke-width="1.3" stroke-linecap="round">
+                    <path d="M4.2 6.8h15.6l-1.2 13.3a1.9 1.9 0 0 1-1.9 1.7H7.3a1.9 1.9 0 0 1-1.9-1.7L4.2 6.8Z" />
+                    <path d="M2.8 6.8h18.4" />
+                    <path d="M9.2 6.8V4.6a1 1 0 0 1 1-1h3.6a1 1 0 0 1 1 1v2.2" />
+                    <path d="M9.6 10.8v7.6M12 10.8v7.6M14.4 10.8v7.6" />
+                </svg>
+                <div>
+                    <h1>Onboard screen</h1>
+                    <p class="sub">What the ESP&rsquo;s 320 &times; 170 panel draws</p>
+                </div>
+            </div>
+
+            <div class="link-state" id="wifi-status" title="Checking WiFi...">
+                <span class="bars" id="wifi-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                <span id="wifi-text">&mdash;</span>
+            </div>
+
+            <a class="btn" href="/" style="text-decoration:none">Back to console</a>
+        </div>
+
+        <section class="block">
+            <div class="lcd-frame">
+                <div class="lcd-controls">
+                    <div class="seg" role="group" aria-label="Panel screen" id="lcd-seg">
+                        <button type="button" data-lcd="awake" aria-pressed="true">Schedule</button>
+                        <button type="button" data-lcd="net" aria-pressed="false">Network</button>
+                        <button type="button" data-lcd="asleep" aria-pressed="false">Asleep</button>
+                    </div>
+                    <div class="seg" role="group" aria-label="Magnification" id="lcd-zoom-seg">
+                        <button type="button" data-zoom="0.5" aria-pressed="false">Actual size</button>
+                        <button type="button" data-zoom="1" aria-pressed="true">1:1</button>
+                        <button type="button" data-zoom="2" aria-pressed="false">2&times;</button>
+                    </div>
+                    <span class="scale-note">42.6 &times; 22.6 mm &middot; 191 ppi</span>
+                </div>
+
+                <div class="lcd-scroll">
+                    <div class="lcd" id="lcd">
+                        <div class="lcd-screen lcd-sched" data-screen="awake">
+                            <div class="lcd-date" id="lcd-date"></div>
+                            <div class="lcd-body">
+                                <span class="lcd-act" id="lcd-act">&mdash;</span>
+                                <div class="lcd-streams" id="lcd-streams"></div>
+                            </div>
+                            <div class="lcd-bar">
+                                <span class="t" id="lcd-time">--:--</span>
+                                <span class="lcd-bars" id="lcd-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                                <span class="push" id="lcd-labels"></span>
+                            </div>
+                        </div>
+
+                        <div class="lcd-screen lcd-net" data-screen="net" hidden>
+                            <div class="lcd-info">
+                                <div><span class="lcd-k">Network</span>
+                                    <div class="lcd-v" id="lcd-ssid">&mdash;</div>
+                                </div>
+                                <div><span class="lcd-k">Manage at</span>
+                                    <div class="lcd-v">rubbish.local</div>
+                                </div>
+                                <div><span class="lcd-k">Address</span>
+                                    <div class="lcd-v" id="lcd-ip">&mdash;</div>
+                                </div>
+                            </div>
+                            <div class="lcd-qr" id="lcd-qr-wrap">
+                                <span id="lcd-qr-slot"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <p class="lcd-note">
+                    On the device a tap cycles Schedule &rarr; Network &rarr; asleep, and it dims itself
+                    after 60 seconds. This is a preview of the frame it draws, not a capture of the
+                    live panel.
+                </p>
+            </div>
+        </section>
+
+        <footer>
+            <span>Firmware <span class="mono" id="fw-version">&mdash;</span></span>
+            <a class="btn" href="/" style="margin-left:auto;text-decoration:none">Back to console</a>
+        </footer>
+
+    </div>
+
+    <script src="app.js?v=8"></script>
+</body>
+
+</html>

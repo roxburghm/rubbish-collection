@@ -9,14 +9,16 @@ public:
     std::string targetStr;
     NimBLEAddress foundAddress; // Actual address with correct type from scan
     bool found;
+    int foundRssi;
 
-    TargetScanCallback(NimBLEAddress addr) : targetStr(addr.toString()), found(false) {}
+    TargetScanCallback(NimBLEAddress addr) : targetStr(addr.toString()), found(false), foundRssi(0) {}
 
     void onResult(const NimBLEAdvertisedDevice* device) override {
         if (device->getAddress().toString() == targetStr) {
             found = true;
             foundAddress = device->getAddress();
-            Serial.printf("BLE: Target %s seen, connecting immediately\n", targetStr.c_str());
+            foundRssi = device->getRSSI();
+            Serial.printf("BLE: Target %s seen at %d dBm, connecting immediately\n", targetStr.c_str(), foundRssi);
             NimBLEDevice::getScan()->stop();
         }
     }
@@ -28,6 +30,16 @@ ZhsunycoMaster::ZhsunycoMaster() {
 
 void ZhsunycoMaster::begin() {
     NimBLEDevice::init("RubbishServer");
+
+    // Raise transmit power from the ~+3 dBm default to the ESP32-C6 maximum.
+    // The E-Ink tags are the range-limiting factor and this is the cheapest
+    // ~17 dB we can get; note it only improves the ESP->tag direction, since
+    // the tags advertise at whatever power their own firmware chose.
+    if (!NimBLEDevice::setPower(BLE_TX_POWER_DBM)) {
+        Serial.printf("BLE: setPower(%d) rejected, running at default power\n", BLE_TX_POWER_DBM);
+    }
+    Serial.printf("BLE: TX power %d dBm\n", NimBLEDevice::getPower());
+
     _scan = NimBLEDevice::getScan();
     _scan->setInterval(45);
     _scan->setWindow(15);
@@ -41,10 +53,34 @@ std::vector<String> ZhsunycoMaster::scanTags(int durationSec) {
     for(int i=0; i<results.getCount(); i++) {
         const NimBLEAdvertisedDevice* device = results.getDevice(i);
         if (device->isAdvertisingService(NimBLEUUID(SERVICE_UUID))) {
-            foundTags.push_back(String(device->getAddress().toString().c_str()));
+            String mac = String(device->getAddress().toString().c_str());
+            _recordRssi(mac, device->getRSSI());
+            foundTags.push_back(mac);
         }
     }
     return foundTags;
+}
+
+// MAC keys are normalised to lowercase: NimBLE renders addresses lowercase but
+// MACs entered through the dashboard are typically uppercase.
+void ZhsunycoMaster::_recordRssi(const String& mac, int rssi) {
+    if (rssi == 0) return; // no reading available
+    String key = mac;
+    key.toLowerCase();
+    _lastRssi[key] = rssi;
+    _lastRssiTime[key] = time(nullptr);
+}
+
+int ZhsunycoMaster::getLastRssi(String macAddress) {
+    macAddress.toLowerCase();
+    if (!_lastRssi.count(macAddress)) return 0;
+    return _lastRssi[macAddress];
+}
+
+time_t ZhsunycoMaster::getLastRssiTime(String macAddress) {
+    macAddress.toLowerCase();
+    if (!_lastRssiTime.count(macAddress)) return 0;
+    return _lastRssiTime[macAddress];
 }
 
 uint16_t ZhsunycoMaster::crc16(const uint8_t* data, size_t len) {
@@ -68,14 +104,19 @@ uint16_t ZhsunycoMaster::crc16(const uint8_t* data, size_t len) {
 }
 
 // RLE Compression based on Python implementation
-std::vector<uint8_t> ZhsunycoMaster::compressRLE(const uint8_t* data, size_t len) {
+std::vector<uint8_t> ZhsunycoMaster::compressRLE(const uint8_t* data, size_t len, bool packed) {
+     // One accessor for both layouts keeps a single copy of the run-length
+     // logic below, which is fiddly enough without a second version of it.
+     auto px = [&](size_t idx) -> uint8_t {
+         return packed ? (uint8_t)((data[idx >> 3] >> (7 - (idx & 7))) & 1) : data[idx];
+     };
      std::vector<uint8_t> out;
      size_t i = 0;
      while (i < len) {
          int run_len = 0;
-         uint8_t current_val = data[i];
+         uint8_t current_val = px(i);
          size_t j = i;
-         while (j < len && data[j] == current_val) {
+         while (j < len && px(j) == current_val) {
              run_len++;
              j++;
              if (run_len >= 0xFFFF) break;
@@ -83,14 +124,14 @@ std::vector<uint8_t> ZhsunycoMaster::compressRLE(const uint8_t* data, size_t len
 
          if (run_len < 7) {
              uint8_t byte_val = 0x80;
-             if (i < len) byte_val |= (data[i] << 6);
+             if (i < len) byte_val |= (px(i) << 6);
 
              int consumed = 0;
              uint8_t accum = 0;
              for (int k = 0; k < 7; k++) {
                  if (i + k < len) {
                      consumed++;
-                     if (k > 0) accum |= (data[i+k] << (6 - k));
+                     if (k > 0) accum |= (px(i+k) << (6 - k));
                  }
              }
              byte_val |= accum;
@@ -123,13 +164,13 @@ String ZhsunycoMaster::bytesToHex(const std::vector<uint8_t>& data) {
     return s;
 }
 
-bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const uint8_t* redBitmap, int width, int height) {
+bool ZhsunycoMaster::updateTag(String macAddress, const uint8_t* bwBitmap, const uint8_t* redBitmap, int width, int height, bool packed) {
     NimBLEAddress address(std::string(macAddress.c_str()), BLE_ADDR_PUBLIC);
     if (!connect(address)) return false;
 
     size_t numPixels = width * height;
-    std::vector<uint8_t> comp_bw = compressRLE(bwBitmap, numPixels);
-    std::vector<uint8_t> comp_red = compressRLE(redBitmap, numPixels);
+    std::vector<uint8_t> comp_bw = compressRLE(bwBitmap, numPixels, packed);
+    std::vector<uint8_t> comp_red = compressRLE(redBitmap, numPixels, packed);
 
     String hex_bw = bytesToHex(comp_bw);
     String hex_red = bytesToHex(comp_red);
@@ -278,6 +319,7 @@ bool ZhsunycoMaster::connect(NimBLEAddress address) {
 
     // Wait for scan to fully stop before connecting
     NimBLEAddress actualAddress = cb.foundAddress;
+    _recordRssi(String(actualAddress.toString().c_str()), cb.foundRssi);
     Serial.printf("BLE: %s found (type=%d)\n", actualAddress.toString().c_str(), actualAddress.getType());
     while (_scan->isScanning()) { delay(10); }
 

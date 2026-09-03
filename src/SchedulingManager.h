@@ -14,6 +14,8 @@ struct DeviceStatus {
   time_t lastSuccess = 0;
   time_t lastAttempt = 0;
   time_t lastSeen = 0;
+  int lastRssi = 0;         // dBm of the last advertisement seen; 0 = never seen
+  time_t lastRssiTime = 0;  // when lastRssi was measured
   bool lastResult = false;
   String lastDataHash = "";
   int retryCount = 0;
@@ -39,6 +41,17 @@ public:
   time_t getNextScheduledEpoch();
   String getDeviceStatusJson();
 
+  // --- Onboard console (320x170 LCD) ---
+  // The touch task calls these; it must never draw. Only loop() draws, so
+  // there is exactly one writer on the SPI bus.
+  //
+  // A tap cycles: asleep -> schedule -> network -> asleep.
+  // Returns true if the backlight should be lit after the tap.
+  bool consoleTap();
+  void consoleSleep();      // 60s auto-dim, from the touch task
+  bool consoleAwake();
+  void requestConsoleRedraw();
+
 private:
   CouncilClient *_api;
   ZhsunycoMaster *_ble;
@@ -63,10 +76,33 @@ private:
 
   int _lastDisplayDay = -1; // Track day-of-year to detect day changes
 
+  // Console state. Guarded by _mutex because the touch task writes it.
+  enum ConsoleScreen { CONSOLE_SCHEDULE = 0, CONSOLE_NETWORK = 1 };
+  int _consoleScreen = CONSOLE_SCHEDULE;
+  bool _consoleAwake = true;
+  bool _consoleDirty = true;
+  int _consoleLastMinute = -1;
+
   void _processUpdate();
+  // daysOverride pretends the next collection is that many days away, so a
+  // label can be made to show its tonight/tomorrow/today face on demand
+  // instead of waiting for the calendar. -1 means use the real date.
   void
   _generateAndSendImage(JsonDocument &data, String targetMac,
-                        SystemErrorState errorState = SystemErrorState::NONE);
+                        SystemErrorState errorState = SystemErrorState::NONE,
+                        int daysOverride = -1,
+                        String previewDate = "");
   void _sendTestPattern(String mac, String type);
   void _scanForDevices();
+
+  // Console rendering. _drawConsole() composes a whole frame off-screen and
+  // pushes it in one go, so the panel never shows a half-drawn state.
+  void _drawConsole();
+  // Minute ticks only move the clock, so they repaint the 320x26 status band
+  // alone (17KB) instead of asking for a whole frame buffer (106KB) that the
+  // e-ink builder needs to be able to find.
+  void _drawConsoleBarOnly();
+  void _drawConsoleSchedule(lgfx::LovyanGFX &g, const struct tm &now, bool timeKnown);
+  void _drawConsoleNetwork(lgfx::LovyanGFX &g);
+  void _drawConsoleBar(lgfx::LovyanGFX &g, const struct tm &now, bool timeKnown);
 };

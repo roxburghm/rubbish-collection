@@ -101,65 +101,10 @@ void WifiHandler::begin() {
     Serial.println("Time Synced: " + String(asctime(&timeinfo)));
   }
 
-  if (_display) {
-    _display->fillScreen(TFT_BLACK);
-
-    // Split Screen Layout (320x170)
-    // Left Side: Text info (0-180)
-    // Right Side: QR Code (180-320)
-
-    // -- Left Side (Status) --
-    _display->setTextDatum(top_left);
-    _display->setCursor(10, 15);
-    _display->setTextColor(TFT_LIGHTGREY);
-    _display->setTextSize(1);
-    _display->println("STATUS");
-
-    _display->setCursor(10, 30);
-    _display->setTextColor(TFT_GREEN);
-    _display->setTextSize(2);
-    _display->println("ONLINE");
-
-    // -- Right Side (Time) --
-    _display->setTextDatum(top_right);
-    _display->setTextColor(TFT_LIGHTGREY);
-    _display->setTextSize(1);
-    _display->drawString("TIME", 170, 15);
-
-    if (timeinfo.tm_year > 70) {
-      char timeBuf[10];
-      strftime(timeBuf, 10, "%H:%M", &timeinfo);
-      _display->setTextColor(TFT_WHITE);
-      _display->setTextSize(2);
-      _display->drawString(timeBuf, 170, 30);
-    }
-
-    _display->setTextDatum(top_left); // Reset
-
-    _display->setCursor(10, 60);
-    _display->setTextColor(TFT_WHITE);
-    _display->setTextSize(1);
-    _display->println("Network:");
-    _display->setCursor(10, 72);
-    _display->setTextColor(TFT_CYAN); // Pop color
-    _display->setTextSize(2);
-    _display->println(WiFi.SSID());
-
-    _display->setCursor(10, 100);
-    _display->setTextColor(TFT_WHITE);
-    _display->setTextSize(1);
-    _display->println("Manage at:");
-    _display->setCursor(10, 112);
-    _display->setTextColor(TFT_YELLOW);
-    _display->setTextSize(2);
-    _display->println(WiFi.localIP());
-
-    // -- Right Side --
-    String url = "http://" + WiFi.localIP().toString();
-    _display->qrcode(url, 190, 25, 120, 6);
-
-    _display->drawFastVLine(180, 10, 150, 0x4208); // Dark Grey
-  }
+  // No status splash here. Everything it showed — SSID, address, the manage
+  // QR — is the Network screen, one tap away, and drawn properly. The panel
+  // now belongs to SchedulingManager from this point on; it paints the
+  // console as soon as loop() runs.
 }
 
 void WifiHandler::loop() {
@@ -175,43 +120,10 @@ void WifiHandler::loop() {
     }
   }
 
-  // Update Clock every minute
-  static unsigned long lastClock = 0;
-  if (_display &&
-      (millis() - lastClock >
-       1000)) { // Update every second for debug, or minute? Minute is fine.
-    // Actually showing seconds might be nice if we have space, but user asked
-    // for HH:MM. Let's stick to minute update but check often.
-
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      // Only redraw if minute changed?
-      static int lastMin = -1;
-      if (timeinfo.tm_min != lastMin) {
-        lastMin = timeinfo.tm_min;
-
-        // Clear Area (Right side of status block)
-        // x=90 to 180, y=10 to 50
-        _display->fillRect(90, 10, 90, 50, TFT_BLACK);
-
-        // Redraw "Time" Label
-        _display->setTextDatum(top_right);
-        _display->setTextColor(TFT_LIGHTGREY);
-        _display->setTextSize(1);
-        _display->drawString("TIME", 170, 15);
-        if (timeinfo.tm_year > 70) {
-          char timeBuf[10];
-          strftime(timeBuf, 10, "%H:%M", &timeinfo);
-          _display->setTextColor(TFT_WHITE);
-          _display->setTextSize(2);
-          _display->drawString(timeBuf, 170, 30);
-        }
-
-        // Reset Datum for other draws
-        _display->setTextDatum(top_left);
-      }
-    }
-  }
+  // The panel belongs to SchedulingManager once we are online: it composes
+  // the whole 320x170 frame off-screen and pushes it in one write. Drawing
+  // a clock from here too would mean two writers on the same SPI bus with
+  // two different ideas of the layout.
 }
 
 bool WifiHandler::isConnected() { return WiFi.status() == WL_CONNECTED; }

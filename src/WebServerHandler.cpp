@@ -171,6 +171,10 @@ void WebServerHandler::_setupRoutes() {
         (unsigned long long)_scheduler->getNextScheduledEpoch() * 1000;
     doc["rssi"] = WiFi.RSSI();
     doc["ssid"] = WiFi.SSID();
+    // Tag rendering needs ~114KB in three chunks; largestBlock is what
+    // actually decides whether it succeeds.
+    doc["freeHeap"] = ESP.getFreeHeap();
+    doc["largestBlock"] = ESP.getMaxAllocHeap();
 
     String json;
     serializeJson(doc, json);

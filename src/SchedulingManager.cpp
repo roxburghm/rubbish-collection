@@ -2,6 +2,11 @@
 #include <WiFi.h>
 #include <time.h>
 
+namespace {
+// Defined with the console helpers below; the tag renderer needs it first.
+String fitText(lgfx::LovyanGFX &g, const String &s, int maxW);
+} // namespace
+
 SchedulingManager::SchedulingManager(CouncilClient *api, ZhsunycoMaster *ble,
                                      ConfigManager *config, LGFX *display)
     : _api(api), _ble(ble), _config(config), _display(display) {
@@ -26,6 +31,47 @@ void SchedulingManager::requestTestPattern(String mac, String type) {
 void SchedulingManager::requestTriggerDevice(String mac) {
   xSemaphoreTake(_mutex, portMAX_DELAY);
   _pendingTriggerMacs.push_back(mac);
+  xSemaphoreGive(_mutex);
+}
+
+// --- Onboard console state (touch task writes, loop() draws) ---
+
+bool SchedulingManager::consoleTap() {
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  if (!_consoleAwake) {
+    // Waking always lands on the schedule — the reason you looked.
+    _consoleAwake = true;
+    _consoleScreen = CONSOLE_SCHEDULE;
+  } else if (_consoleScreen == CONSOLE_SCHEDULE) {
+    _consoleScreen = CONSOLE_NETWORK;
+  } else {
+    _consoleAwake = false;
+  }
+  _consoleDirty = true;
+  bool awake = _consoleAwake;
+  xSemaphoreGive(_mutex);
+  return awake;
+}
+
+void SchedulingManager::consoleSleep() {
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  _consoleAwake = false;
+  // Next wake starts from the schedule again.
+  _consoleScreen = CONSOLE_SCHEDULE;
+  _consoleDirty = true;
+  xSemaphoreGive(_mutex);
+}
+
+bool SchedulingManager::consoleAwake() {
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  bool awake = _consoleAwake;
+  xSemaphoreGive(_mutex);
+  return awake;
+}
+
+void SchedulingManager::requestConsoleRedraw() {
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  _consoleDirty = true;
   xSemaphoreGive(_mutex);
 }
 
@@ -101,6 +147,8 @@ String SchedulingManager::getDeviceStatusJson() {
       obj["lastSuccess"] = s.lastSuccess;
       obj["lastAttempt"] = s.lastAttempt;
       obj["lastSeen"] = s.lastSeen;
+      obj["rssi"] = s.lastRssi;
+      obj["rssiTime"] = s.lastRssiTime;
       obj["result"] = s.lastResult;
       obj["pending"] = s.pendingUpdate;
       obj["retries"] = s.retryCount;
@@ -108,6 +156,8 @@ String SchedulingManager::getDeviceStatusJson() {
       obj["lastSuccess"] = 0;
       obj["lastAttempt"] = 0;
       obj["lastSeen"] = 0;
+      obj["rssi"] = 0;
+      obj["rssiTime"] = 0;
       obj["result"] = false;
       obj["pending"] = false;
     }
@@ -137,11 +187,17 @@ void SchedulingManager::_scanForDevices() {
       String registered = v.as<String>();
       if (registered.equalsIgnoreCase(foundMac)) {
         _deviceStatuses[registered].lastSeen = now;
-        Serial.printf("BLE: Seen %s\n", registered.c_str());
+        int sightingRssi = _ble->getLastRssi(registered);
+        if (sightingRssi != 0) {
+          _deviceStatuses[registered].lastRssi = sightingRssi;
+          _deviceStatuses[registered].lastRssiTime = now;
+        }
+        Serial.printf("BLE: Seen %s at %d dBm\n", registered.c_str(), sightingRssi);
         break;
       }
     }
   }
+  _consoleDirty = true; // the "n/m labels" count may have moved
   xSemaphoreGive(_mutex);
   Serial.printf("BLE: Scan complete, found %d tag(s)\n", found.size());
 }
@@ -251,6 +307,9 @@ void SchedulingManager::loop() {
     if (_lastDisplayDay != -1 && _lastDisplayDay != currentDay) {
       Serial.println("Day changed - queueing display refresh for all devices");
       xSemaphoreTake(_mutex, portMAX_DELAY);
+      // TODAY/TOMORROW wording is relative to the date, so the console has
+      // to repaint too, not just the tags.
+      _consoleDirty = true;
       String cj = _config->getDevicesJson();
       JsonDocument dd;
       deserializeJson(dd, cj);
@@ -329,6 +388,36 @@ void SchedulingManager::loop() {
       _generateAndSendImage(dataCopy, mac, _currentErrorState);
     }
   }
+
+  // 7. Onboard console. This is the only place the panel is drawn, so BLE
+  //    writes above have already finished and the SPI bus is free.
+  //    While the backlight is off there is nothing to see, so skip the work
+  //    entirely — waking sets _consoleDirty and repaints with fresh content.
+  {
+    struct tm ct;
+    bool ctKnown = getLocalTime(&ct);
+
+    bool fullRedraw = false;
+    bool barOnly = false;
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+    if (_consoleAwake) {
+      if (_consoleDirty) {
+        fullRedraw = true;
+        _consoleDirty = false;
+        if (ctKnown) _consoleLastMinute = ct.tm_min;
+      } else if (ctKnown && ct.tm_min != _consoleLastMinute) {
+        // Only the clock moved. Repaint the status band, not the frame —
+        // a 106KB request every minute fragments the heap that the e-ink
+        // builder needs in one contiguous piece.
+        barOnly = true;
+        _consoleLastMinute = ct.tm_min;
+      }
+    }
+    xSemaphoreGive(_mutex);
+
+    if (fullRedraw) _drawConsole();
+    else if (barOnly) _drawConsoleBarOnly();
+  }
 }
 
 // --- Internal methods (called only from loop task) ---
@@ -368,6 +457,7 @@ void SchedulingManager::_processUpdate() {
     xSemaphoreTake(_mutex, portMAX_DELAY);
     _lastData = doc;
     _lastUpdateEpoch = time(nullptr);
+    _consoleDirty = true; // new schedule: the console is showing stale dates
 
     String configJson = _config->getDevicesJson();
     JsonDocument devDoc;
@@ -388,7 +478,9 @@ void SchedulingManager::_processUpdate() {
 
 void SchedulingManager::_generateAndSendImage(JsonDocument &data,
                                               String targetMac,
-                                              SystemErrorState errorState) {
+                                              SystemErrorState errorState,
+                                              int daysOverride,
+                                              String previewDate) {
   if (targetMac == "")
     return;
 
@@ -522,173 +614,229 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   }
   Serial.printf("servicesLine: [%s]\n", servicesLine.c_str());
 
-  // 1. SIDE BAR (Time or Error indicator)
-  int sideBarW = 26; // Smaller width (was 34)
+  // ---------------------------------------------------------------
+  //  The tag frame: 296 x 128, three inks, same tear-off as the LCD
+  //  and the web dashboard.
+  //
+  //  Red is spent exactly once per state:
+  //    collection tomorrow  -> the date block floods red
+  //    collection in 2 days -> red on the action line only
+  //    collection today     -> no red; the moment to act has gone
+  //    an error             -> red on the action line
+  // ---------------------------------------------------------------
 
-  if (errorState == SystemErrorState::NO_WIFI ||
-      errorState == SystemErrorState::API_ERROR) {
-    sprite.fillRect(0, 0, sideBarW, H, TFT_RED);
-    sprite.drawFastVLine(sideBarW, 0, H, TFT_BLACK);
+  const int DATE_W = 100;
+  const int BODY_X = DATE_W + 12;
+  const int BODY_W = W - BODY_X - 12;
 
-    int cx = sideBarW / 2;
-    int cy = H / 2;
-
-    if (errorState == SystemErrorState::NO_WIFI) {
-      // White WiFi Logo (dot + 3 arcs, crossed out)
-      sprite.fillCircle(cx, cy + 9, 2, TFT_WHITE);
-      sprite.drawFastHLine(cx - 3, cy + 4, 7, TFT_WHITE);
-      sprite.drawFastHLine(cx - 6, cy - 1, 13, TFT_WHITE);
-      sprite.drawFastHLine(cx - 9, cy - 6, 19, TFT_WHITE);
-      sprite.drawPixel(cx - 4, cy + 5, TFT_WHITE);
-      sprite.drawPixel(cx + 4, cy + 5, TFT_WHITE);
-      sprite.drawPixel(cx - 7, cy, TFT_WHITE);
-      sprite.drawPixel(cx + 7, cy, TFT_WHITE);
-      sprite.drawPixel(cx - 10, cy - 5, TFT_WHITE);
-      sprite.drawPixel(cx + 10, cy - 5, TFT_WHITE);
-
-      // Cross
-      sprite.drawLine(cx - 8, cy - 10, cx + 8, cy + 10, TFT_WHITE);
-      sprite.drawLine(cx - 8, cy + 10, cx + 8, cy - 10, TFT_WHITE);
-    } else {
-      // API_ERROR: Exclamation mark
-      sprite.fillCircle(cx, cy + 15, 2, TFT_WHITE);
-      sprite.fillRoundRect(cx - 2, cy - 18, 5, 25, 2, TFT_WHITE);
-    }
-  } else {
-    // Normal operation: show timestamp
-    sprite.fillRect(0, 0, sideBarW, H, TFT_WHITE);
-    sprite.drawFastVLine(sideBarW, 0, H, TFT_BLACK);
-
-    // Rotated Time
-    LGFX_Sprite sidebar(_display);
-    sidebar.setColorDepth(8);
-    sidebar.createSprite(H, sideBarW);
-    sidebar.fillSprite(TFT_WHITE);
-    sidebar.setTextColor(TFT_BLACK);
-    sidebar.setFont(nullptr);
-    sidebar.setTextSize(1);
-    sidebar.setTextDatum(middle_center);
-
-    String updateTime = "@ --/--";
-    if (timeKnown) {
-      char buf[20];
-      strftime(buf, 20, "@ %d/%m %H:%M", &timeinfo);
-      updateTime = String(buf);
-    }
-    sidebar.drawString(updateTime, H / 2, sideBarW / 2 + 2); // Center
-    sidebar.pushRotateZoom(&sprite, sideBarW / 2, H / 2, 90, 1, 1);
-    sidebar.deleteSprite();
+  // Previewing a specific collection: swap the target date in before anything
+  // is derived, so the streams listed are the ones that really fall on it.
+  if (previewDate.length() >= 10) {
+    nextDate = previewDate;
   }
 
-  // 2. HEADER (Date)
-  int mainX = sideBarW + 1;
-  int mainW = W - sideBarW - 1;
-  int headerH = 45;
+  // Days until the next collection, from local midnight.
+  int daysAway = 999;
+  struct tm nextTm = {0};
+  bool nextValid = false;
 
-  uint16_t headerBg = isUrgent ? TFT_RED : TFT_BLACK;
-  sprite.fillRect(mainX, 0, mainW, headerH, headerBg);
+  if (nextDate.length() >= 10) {
+    nextTm.tm_mday = nextDate.substring(0, 2).toInt();
+    nextTm.tm_mon = nextDate.substring(3, 5).toInt() - 1;
+    nextTm.tm_year = nextDate.substring(6, 10).toInt() - 1900;
+    nextTm.tm_isdst = -1;
+    time_t nextEpoch = mktime(&nextTm);
+    localtime_r(&nextEpoch, &nextTm);
+    nextValid = true;
 
-  sprite.setTextColor(TFT_WHITE);
-  sprite.setFont(&fonts::FreeSansBold12pt7b);
-  sprite.setTextDatum(middle_center);
-  sprite.setTextSize(1);
+    if (timeKnown) {
+      struct tm todayTm = timeinfo;
+      todayTm.tm_hour = 0;
+      todayTm.tm_min = 0;
+      todayTm.tm_sec = 0;
+      todayTm.tm_isdst = -1;
+      time_t todayEpoch = mktime(&todayTm);
+      daysAway = (int)(difftime(nextEpoch, todayEpoch) / 86400.0 + 0.5);
+    }
+  }
 
-  sprite.drawString(headerText, mainX + mainW / 2, headerH / 2 + 2);
+  // Preview mode: shift the shown date too, so the wording and the date on
+  // the tag agree instead of claiming "tonight" over a date four days out.
+  if (daysOverride >= 0 && timeKnown) {
+    struct tm shifted = timeinfo;
+    shifted.tm_mday += daysOverride;
+    shifted.tm_hour = 12;
+    shifted.tm_isdst = -1;
+    time_t shiftedEpoch = mktime(&shifted);
+    localtime_r(&shiftedEpoch, &nextTm);
+    nextValid = true;
+    daysAway = daysOverride;
+  }
 
-  // 3. MIDDLE (Main Services List)
-  int midY = headerH;
-  int midH = 50;
-  sprite.fillRect(mainX, midY, mainW, midH, TFT_WHITE);
+  bool hasError = (errorState != SystemErrorState::NONE);
+  bool floodDate = (!hasError && daysAway == 1);
+  bool redAction = (!hasError && daysAway == 2);
 
-  sprite.setTextColor(TFT_BLACK);
-  sprite.setFont(&fonts::FreeSansBold9pt7b);
+  String actionLine;
+  if (hasError) {
+    actionLine = (errorState == SystemErrorState::NO_WIFI) ? "NO WIFI - LAST KNOWN"
+                                                           : "API ERROR - LAST KNOWN";
+  } else if (daysAway == 0) {
+    actionLine = "COLLECTION TODAY";
+  } else if (daysAway == 1) {
+    actionLine = "BINS OUT TONIGHT";
+  } else if (daysAway == 2) {
+    actionLine = "BINS OUT TOMORROW";
+  } else {
+    actionLine = "NEXT COLLECTION";
+  }
 
-  sprite.setTextSize(1);
-
-  sprite.setTextDatum(middle_center);
-  sprite.drawString(servicesLine, mainX + mainW / 2, midY + midH / 2 - 2);
-
-  sprite.drawFastHLine(mainX, midY + midH, mainW, TFT_BLACK); // Divider
-
-  // 4. BOTTOM (Grid/Footer)
-  int botY = midY + midH;
-  int botH = H - botY;
-  sprite.fillRect(mainX, botY, mainW, botH, TFT_WHITE);
-
-  sprite.setFont(nullptr); // Use Default Font for smallest clear text
-  sprite.setTextSize(1);
-  sprite.setTextColor(TFT_BLACK);
-  sprite.setTextDatum(top_left);
-
-  // Grid Layout
-  int col1X = mainX + 20;
-  int col2X = mainX + (mainW / 2) + 30;
-  int row1Y = botY + 8;
-  int row2Y = botY + 20;
-
-  int itemIdx = 0;
-  const char *gridKeys[] = {"RUBBISH", "RECYCLING", "FOOD", "GARDEN"};
+  const char *DOW3[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+  const char *MON3[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                        "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  // Short forms for the shared line and the footer, in binKeys order.
   const char *gridShort[] = {"RUBBISH", "RECYCLE", "FOOD", "GARDEN"};
 
-  for (int o = 0; o < 4 && itemIdx < 4; o++) {
-    // Find first matching service for this bin type
+  // --- date block ---
+  sprite.fillRect(0, 0, DATE_W, H, floodDate ? TFT_RED : TFT_BLACK);
+  sprite.setTextColor(TFT_WHITE);
+  sprite.setTextSize(1);
+  sprite.setTextDatum(top_center);
+
+  if (nextValid) {
+    // The stamp is part of this stack, so the four elements are centred as
+    // one group: 13 + 6 + 48 + 6 + 13 + 10 + 8 = 104 in 128, 12px each end.
+    sprite.setFont(&fonts::FreeSansBold9pt7b);
+    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 12);
+
+    // Font6 is a clean 48px numeric face. Scaling a vector font 2x on a
+    // 1-bit panel doubles every stroke and looks crude; this does not.
+    sprite.setFont(&fonts::Font6);
+    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 31);
+
+    sprite.setFont(&fonts::FreeSansBold9pt7b);
+    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 85);
+  } else {
+    sprite.setFont(&fonts::FreeSansBold9pt7b);
+    sprite.drawString("NO", DATE_W / 2, 48);
+    sprite.drawString("DATE", DATE_W / 2, 68);
+  }
+
+  // --- action line ---
+  sprite.setTextDatum(top_left);
+  sprite.setTextColor(redAction || hasError ? TFT_RED : TFT_BLACK);
+  sprite.setFont(&fonts::FreeSansBold9pt7b);
+  sprite.drawString(actionLine, BODY_X, 12);
+
+  // --- the streams going out that day ---
+  // Two lines at most. Three or four streams collapse onto a shared line
+  // using their short names, exactly as the web preview shows.
+  String lines[3];
+  int lineCount = 0;
+  {
+    String names[4];
+    String shorts[4];
+    int n = 0;
+    for (int o = 0; o < 4 && n < 4; o++) {
+      for (JsonVariant v : serviceList) {
+        String s = v["Service"].as<String>();
+        s.toUpperCase();
+        if (s.indexOf(binKeys[o]) < 0) continue;
+        if (firstDate(v["collectionDateString"]) != nextDate) break;
+
+        if (strcmp(binKeys[o], "RUBBISH") == 0)        names[n] = "RUBBISH";
+        else if (strcmp(binKeys[o], "RECYCLING") == 0) names[n] = "RECYCLING";
+        else if (strcmp(binKeys[o], "FOOD") == 0)      names[n] = "FOOD WASTE";
+        else                                            names[n] = "GARDEN WASTE";
+        shorts[n] = gridShort[o];
+        n++;
+        break;
+      }
+    }
+
+    if (n <= 3) {
+      // Three full names still clear the footer rule at 22px leading.
+      for (int i = 0; i < n; i++) lines[i] = names[i];
+      lineCount = n;
+    } else {
+      // Four will not fit, so the tail collapses to short names on one line.
+      lines[0] = names[0];
+      lines[1] = "";
+      for (int i = 1; i < n; i++) {
+        if (lines[1].length()) lines[1] += " / ";
+        lines[1] += shorts[i];
+      }
+      lineCount = 2;
+    }
+  }
+
+  sprite.setFont(&fonts::FreeSansBold12pt7b);
+  sprite.setTextColor(TFT_BLACK);
+
+  // Leading tightens as the list grows so the block stays between the action
+  // line and the footer rule at y=96.
+  int lineY, lineStep;
+  if (lineCount >= 3)      { lineY = 32; lineStep = 22; }
+  else if (lineCount == 2) { lineY = 44; lineStep = 24; }
+  else                     { lineY = 54; lineStep = 24; }
+
+  for (int i = 0; i < lineCount; i++) {
+    sprite.drawString(fitText(sprite, lines[i], BODY_W), BODY_X, lineY);
+    lineY += lineStep;
+  }
+
+  // --- footer: everything not going out that day ---
+  sprite.drawFastHLine(BODY_X, 96, BODY_W, TFT_BLACK);
+
+  sprite.setFont(nullptr); // 6x8 default face — small, and crisp on e-ink
+  sprite.setTextSize(1);
+  sprite.setTextColor(TFT_BLACK);
+
+  int footX = BODY_X;
+  for (int o = 0; o < 4; o++) {
     for (JsonVariant v : serviceList) {
       String s = v["Service"].as<String>();
       s.toUpperCase();
-      if (s.indexOf(gridKeys[o]) < 0)
-        continue;
+      if (s.indexOf(binKeys[o]) < 0) continue;
 
       String d = firstDate(v["collectionDateString"]);
+      if (d == nextDate) break; // already named above
 
-      // Calc Position
-      int x = (itemIdx % 2 == 0) ? col1X : col2X;
-      int y = (itemIdx < 2) ? row1Y : row2Y;
-
-      // Logic for "NEXT"
-      String dateLabel = d.substring(0, 5); // dd/mm
-      if (d == nextDate) {
-        dateLabel += " *";
-      }
-      if (timeKnown) {
-        int day = d.substring(0, 2).toInt();
-        int month = d.substring(3, 5).toInt();
-        int year = d.substring(6, 10).toInt();
-        struct tm dTm = {0};
-        dTm.tm_mday = day;
-        dTm.tm_mon = month - 1;
-        dTm.tm_year = year - 1900;
-        dTm.tm_isdst = -1;
-        time_t dEpoch = mktime(&dTm);
-
-        struct tm todayTm = timeinfo;
-        todayTm.tm_hour = 0;
-        todayTm.tm_min = 0;
-        todayTm.tm_sec = 0;
-        time_t todayEpoch = mktime(&todayTm);
-
-        double diff = difftime(dEpoch, todayEpoch);
-        if (diff >= 86400 && diff < 172800) {
-          dateLabel = "NEXT";
-        }
-      }
-
-      // Display in Grid: Service ... Date
-      sprite.drawString(gridShort[o], x, y);
-      sprite.drawString(dateLabel, x + 50, y);
-
-      itemIdx++;
-      break; // Only first match per bin type
+      String entry = String(gridShort[o]) + " " + d.substring(0, 5);
+      int entryW = entry.length() * 6;
+      if (footX + entryW > W - 10) break; // never run off the edge
+      sprite.drawString(entry, footX, 102);
+      footX += entryW + 10;
+      break;
     }
+  }
+
+  // Update stamp, closing the date stack. Small: it answers "is this tag
+  // stale?" and nothing more.
+  if (timeKnown) {
+    char stamp[16];
+    strftime(stamp, sizeof(stamp), "%d/%m %H:%M", &timeinfo);
+    sprite.setFont(nullptr);
+    sprite.setTextSize(1);
+    sprite.setTextColor(TFT_WHITE);
+    sprite.setTextDatum(top_center);
+    sprite.drawString(stamp, DATE_W / 2, 108);
+    sprite.setTextDatum(top_left);
   }
 
   // --- SEND TO BLE ---
 
-  int bufSize = W * H;
-  uint8_t *bwBuf = (uint8_t *)malloc(bufSize);
-  uint8_t *redBuf = (uint8_t *)malloc(bufSize);
+  // 1 bit per pixel, MSB first: 4,736 bytes each rather than 37,888. At one
+  // byte per pixel this pair plus the sprite came to 113KB against ~94KB of
+  // free heap, so every tag write failed with OOM.
+  int bufSize = (W * H + 7) / 8;
+  uint8_t *bwBuf = (uint8_t *)calloc(bufSize, 1);
+  uint8_t *redBuf = (uint8_t *)calloc(bufSize, 1);
 
   if (!bwBuf || !redBuf) {
-    Serial.println("FAIL: Malloc Failed (OOM)");
+    Serial.printf("FAIL: OOM building tag image. free=%u largest=%u needed=%u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
+                  (unsigned)bufSize);
     if (bwBuf)
       free(bwBuf);
     if (redBuf)
@@ -719,12 +867,12 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
 
       bool isRed = (c == TFT_RED);
 
+      size_t idx = (size_t)py * W + px;
+      uint8_t mask = 0x80 >> (idx & 7);
       if (isRed) {
-        redBuf[py * W + px] = 1;
-        bwBuf[py * W + px] = 0;
-      } else {
-        redBuf[py * W + px] = 0;
-        bwBuf[py * W + px] = (c != TFT_WHITE) ? 1 : 0;
+        redBuf[idx >> 3] |= mask;
+      } else if (c != TFT_WHITE) {
+        bwBuf[idx >> 3] |= mask;
       }
     }
   }
@@ -733,12 +881,21 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   Serial.print(targetMac);
   Serial.print(" ... ");
   bool success =
-      _ble->updateTag(targetMac, bwBuf, redBuf, W, H); // Blocking BLE, no mutex
+      _ble->updateTag(targetMac, bwBuf, redBuf, W, H,
+                      true); // packed bitmaps; blocking BLE, no mutex
 
   // Update status under mutex
   xSemaphoreTake(_mutex, portMAX_DELAY);
   _deviceStatuses[targetMac].lastAttempt = time(nullptr);
   _deviceStatuses[targetMac].lastResult = success;
+
+  // The connect path records RSSI as soon as the tag is sighted, so this is
+  // populated even when the update itself later fails.
+  int sightingRssi = _ble->getLastRssi(targetMac);
+  if (sightingRssi != 0) {
+    _deviceStatuses[targetMac].lastRssi = sightingRssi;
+    _deviceStatuses[targetMac].lastRssiTime = _ble->getLastRssiTime(targetMac);
+  }
 
   if (success) {
     Serial.println("OK");
@@ -782,12 +939,10 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
   const int W = 296;
   const int H = 128;
 
-  LGFX_Sprite sprite(_display);
-  sprite.setColorDepth(8);
-  sprite.createSprite(W, H);
-
-  sprite.fillSprite(TFT_WHITE);
-
+  // The delegating cases must come FIRST. _generateAndSendImage allocates its
+  // own sprite plus two full-size buffers (~114KB); holding a 37KB sprite of
+  // our own across that call was enough to push it into OOM, so the frame
+  // silently never reached the tag.
   if (type == "wifi") {
     _generateAndSendImage(_lastData, mac, SystemErrorState::NO_WIFI);
     return;
@@ -796,6 +951,29 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
     _generateAndSendImage(_lastData, mac, SystemErrorState::API_ERROR);
     return;
   }
+  // "day0".."day9": render the schedule frame as if collection were that many
+  // days off, so you can put the red state on a label without waiting for it.
+  if (type.startsWith("day") && type.length() > 3) {
+    int offset = type.substring(3).toInt();
+    Serial.printf("Preview: rendering %s as %d day(s) away\n", mac.c_str(), offset);
+    _generateAndSendImage(_lastData, mac, SystemErrorState::NONE, offset);
+    return;
+  }
+  // "date:14/09/2026": render a real future collection, picking the streams
+  // that actually fall on that date rather than simulating a wording.
+  if (type.startsWith("date:") && type.length() > 5) {
+    String target = type.substring(5);
+    Serial.printf("Preview: rendering %s for %s\n", mac.c_str(), target.c_str());
+    _generateAndSendImage(_lastData, mac, SystemErrorState::NONE, -1, target);
+    return;
+  }
+
+  // Only the self-contained frames need a sprite of our own.
+  LGFX_Sprite sprite(_display);
+  sprite.setColorDepth(8);
+  sprite.createSprite(W, H);
+  sprite.fillSprite(TFT_WHITE);
+
   if (type == "hello") {
     sprite.setTextColor(TFT_BLACK);
     sprite.setTextDatum(middle_center);
@@ -834,9 +1012,12 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
   }
 
   // Extraction
-  int bufSize = W * H;
-  uint8_t *bwBuf = (uint8_t *)malloc(bufSize);
-  uint8_t *redBuf = (uint8_t *)malloc(bufSize);
+  // 1 bit per pixel, MSB first: 4,736 bytes each rather than 37,888. At one
+  // byte per pixel this pair plus the sprite came to 113KB against ~94KB of
+  // free heap, so every tag write failed with OOM.
+  int bufSize = (W * H + 7) / 8;
+  uint8_t *bwBuf = (uint8_t *)calloc(bufSize, 1);
+  uint8_t *redBuf = (uint8_t *)calloc(bufSize, 1);
 
   if (!bwBuf || !redBuf) {
     if (bwBuf)
@@ -851,24 +1032,33 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
     for (int px = 0; px < W; px++) {
       uint16_t c = sprite.readPixel(px, py);
       bool isRed = (c == TFT_RED);
+      size_t idx = (size_t)py * W + px;
+      uint8_t mask = 0x80 >> (idx & 7);
       if (isRed) {
-        redBuf[py * W + px] = 1;
-        bwBuf[py * W + px] = 0;
-      } else {
-        redBuf[py * W + px] = 0;
-        bwBuf[py * W + px] = (c != TFT_WHITE) ? 1 : 0;
+        redBuf[idx >> 3] |= mask;
+      } else if (c != TFT_WHITE) {
+        bwBuf[idx >> 3] |= mask;
       }
     }
   }
 
   Serial.printf("Sending test pattern to %s ... ", mac.c_str());
   bool success =
-      _ble->updateTag(mac, bwBuf, redBuf, W, H); // Blocking BLE, no mutex
+      _ble->updateTag(mac, bwBuf, redBuf, W, H,
+                      true); // packed bitmaps; blocking BLE, no mutex
 
   // Update status under mutex
   xSemaphoreTake(_mutex, portMAX_DELAY);
   _deviceStatuses[mac].lastAttempt = time(nullptr);
   _deviceStatuses[mac].lastResult = success;
+
+  // The connect path records RSSI as soon as the tag is sighted, so this is
+  // populated even when the update itself later fails.
+  int sightingRssi = _ble->getLastRssi(mac);
+  if (sightingRssi != 0) {
+    _deviceStatuses[mac].lastRssi = sightingRssi;
+    _deviceStatuses[mac].lastRssiTime = _ble->getLastRssiTime(mac);
+  }
   if (success) {
     Serial.println("OK");
     _deviceStatuses[mac].lastSuccess = time(nullptr);
@@ -883,4 +1073,382 @@ void SchedulingManager::_sendTestPattern(String mac, String type) {
   free(bwBuf);
   free(redBuf);
   sprite.deleteSprite();
+}
+
+// ===================================================================
+//  Onboard console — the 320x170 LCD
+//
+//  The same tear-off the e-ink tag and the web dashboard use, in colour.
+//  The 1.9" panel makes 1px 0.13mm, barely half the tag's, so nothing
+//  here is smaller than FreeSansBold9pt.
+//
+//  loop() is the only caller, so this is the only writer on the SPI bus.
+// ===================================================================
+
+namespace {
+
+// The device palette, matching the --dev-* tokens in data/style.css.
+const uint16_t C_GROUND = lgfx::color565(0x12, 0x11, 0x10);
+// This is a backlit IPS panel: "black" is really a dark grey, so the small
+// steps that separate surfaces on a monitor vanish completely here. The
+// panel and bar fills are pushed much further apart than the web tokens.
+const uint16_t C_PANEL  = lgfx::color565(0x36, 0x31, 0x2d);
+const uint16_t C_BAR    = lgfx::color565(0x24, 0x20, 0x1e);
+const uint16_t C_RULE   = lgfx::color565(0x30, 0x2c, 0x2a);
+const uint16_t C_INK    = lgfx::color565(0xec, 0xe9, 0xe6);
+const uint16_t C_INK2   = lgfx::color565(0xa9, 0xa3, 0xa0);
+const uint16_t C_INK3   = lgfx::color565(0x7d, 0x77, 0x73);
+const uint16_t C_RED    = lgfx::color565(0xe2, 0x3b, 0x30);
+const uint16_t C_ON_RED = lgfx::color565(0xff, 0xfa, 0xf9);
+
+const uint16_t C_RUBBISH   = lgfx::color565(0xa9, 0xa8, 0xa2);
+const uint16_t C_RECYCLING = lgfx::color565(0x6f, 0xa8, 0xea);
+const uint16_t C_FOOD      = lgfx::color565(0xc4, 0x90, 0x6c);
+const uint16_t C_GARDEN    = lgfx::color565(0x7e, 0xc2, 0x67);
+
+const int SCREEN_W = 320;
+const int SCREEN_H = 170;
+const int BAR_H = 26;
+const int MAIN_H = SCREEN_H - BAR_H; // 144
+// 104, not 122: the numeral never filled the wider column, and the space it
+// wasted was space the action line badly needed.
+const int DATE_W = 104;
+
+const char *DOW3[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+const char *MON3[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                      "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+uint16_t consoleStreamColour(const String &service) {
+  if (service.indexOf("RUBBISH") >= 0) return C_RUBBISH;
+  if (service.indexOf("RECYCL") >= 0) return C_RECYCLING;
+  if (service.indexOf("FOOD") >= 0) return C_FOOD;
+  if (service.indexOf("GARDEN") >= 0) return C_GARDEN;
+  return C_INK2;
+}
+
+String consoleStreamName(const String &service) {
+  if (service.indexOf("RUBBISH") >= 0) return "Rubbish";
+  if (service.indexOf("RECYCL") >= 0) return "Recycling";
+  if (service.indexOf("FOOD") >= 0) return "Food waste";
+  if (service.indexOf("GARDEN") >= 0) return "Garden waste";
+  return service;
+}
+
+// Strip the duplicate the API sometimes returns: "23/03/2026,23/03/2026"
+String consoleFirstDate(JsonVariant field) {
+  String raw;
+  if (field.is<JsonArray>()) {
+    JsonArray arr = field.as<JsonArray>();
+    raw = arr.size() > 0 ? arr[0].as<String>() : String("");
+  } else {
+    raw = field.as<String>();
+  }
+  raw.trim();
+  int comma = raw.indexOf(',');
+  if (comma > 0) raw = raw.substring(0, comma);
+  raw.trim();
+  return raw;
+}
+
+// dd/mm/yyyy -> local midnight. 0 if unparseable.
+time_t consoleParseDMY(const String &s) {
+  if (s.length() < 10) return 0;
+  struct tm t = {0};
+  t.tm_mday = s.substring(0, 2).toInt();
+  t.tm_mon = s.substring(3, 5).toInt() - 1;
+  t.tm_year = s.substring(6, 10).toInt() - 1900;
+  t.tm_isdst = -1;
+  return mktime(&t);
+}
+
+String two(int v) { return (v < 10 ? String("0") : String("")) + String(v); }
+
+// Nothing on a 320px panel may be allowed to run off the edge, and the
+// strings here are not under our control — a long SSID, a long council
+// service name. Measure against the space actually available and trim.
+// The caller must have selected the font first.
+String fitText(lgfx::LovyanGFX &g, const String &s, int maxW) {
+  if (g.textWidth(s) <= maxW) return s;
+  String out = s;
+  while (out.length() > 1 && g.textWidth(out + "..") > maxW) {
+    out.remove(out.length() - 1);
+  }
+  return out + "..";
+}
+
+} // namespace
+
+void SchedulingManager::_drawConsole() {
+  if (!_display) return;
+
+  struct tm now;
+  bool timeKnown = getLocalTime(&now);
+
+  int screen;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  screen = _consoleScreen;
+  xSemaphoreGive(_mutex);
+
+  // Preferred path: compose the whole frame off-screen and push it in one
+  // write, so the panel never shows a half-drawn state. That costs 106KB,
+  // which is not always there once WiFi, BLE and the async server have taken
+  // their share — so fall back to drawing straight to the panel. That
+  // flickers briefly, which is a great deal better than a blank screen.
+  LGFX_Sprite g(_display);
+  g.setColorDepth(16);
+  bool buffered = g.createSprite(SCREEN_W, SCREEN_H);
+
+  if (buffered) {
+    g.fillSprite(C_GROUND);
+    if (screen == CONSOLE_NETWORK) {
+      _drawConsoleNetwork(g);
+    } else {
+      _drawConsoleSchedule(g, now, timeKnown);
+      _drawConsoleBar(g, now, timeKnown);
+    }
+    g.pushSprite(0, 0);
+    g.deleteSprite();
+    return;
+  }
+
+  Serial.println("Console: no memory for the frame buffer, drawing direct");
+  _display->startWrite();
+  _display->fillScreen(C_GROUND);
+  if (screen == CONSOLE_NETWORK) {
+    _drawConsoleNetwork(*_display);
+  } else {
+    _drawConsoleSchedule(*_display, now, timeKnown);
+    _drawConsoleBar(*_display, now, timeKnown);
+  }
+  _display->endWrite();
+}
+
+void SchedulingManager::_drawConsoleBarOnly() {
+  if (!_display) return;
+
+  int screen;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  screen = _consoleScreen;
+  xSemaphoreGive(_mutex);
+
+  // The network screen has no clock, so a minute tick changes nothing on it.
+  if (screen != CONSOLE_SCHEDULE) return;
+
+  struct tm now;
+  bool timeKnown = getLocalTime(&now);
+
+  // The status band is a self-contained strip across the full width at a
+  // fixed y, so repainting it on its own cannot clip the tear-off above it.
+  // _drawConsoleBar repaints its own background first, and one 320x26 strip
+  // over SPI is quick enough that the redraw is not visible.
+  _display->startWrite();
+  _drawConsoleBar(*_display, now, timeKnown);
+  _display->endWrite();
+}
+
+void SchedulingManager::_drawConsoleSchedule(lgfx::LovyanGFX &g,
+                                             const struct tm &now,
+                                             bool timeKnown) {
+  JsonDocument data;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  bool hasData = !_lastData.isNull();
+  if (hasData) data = _lastData;
+  xSemaphoreGive(_mutex);
+
+  JsonArray services;
+  if (hasData && data["param2"].is<JsonArray>()) {
+    services = data["param2"].as<JsonArray>();
+  }
+
+  if (services.isNull() || services.size() == 0) {
+    g.setTextDatum(middle_center);
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    g.setTextColor(C_INK3);
+    g.drawString("NO SCHEDULE YET", SCREEN_W / 2, MAIN_H / 2);
+    g.setTextDatum(top_left);
+    return;
+  }
+
+  // Earliest date across all streams, and everything sharing it.
+  time_t bestEpoch = 0;
+  String bestRaw = "";
+  for (JsonVariant v : services) {
+    String raw = consoleFirstDate(v["collectionDateString"]);
+    time_t e = consoleParseDMY(raw);
+    if (e == 0) continue;
+    if (bestEpoch == 0 || e < bestEpoch) {
+      bestEpoch = e;
+      bestRaw = raw;
+    }
+  }
+  if (bestEpoch == 0) return;
+
+  struct tm nextTm;
+  localtime_r(&bestEpoch, &nextTm);
+
+  int diff = 999;
+  if (timeKnown) {
+    struct tm todayTm = now;
+    todayTm.tm_hour = 0;
+    todayTm.tm_min = 0;
+    todayTm.tm_sec = 0;
+    todayTm.tm_isdst = -1;
+    time_t todayEpoch = mktime(&todayTm);
+    diff = (int)(difftime(bestEpoch, todayEpoch) / 86400.0 + 0.5);
+  }
+
+  // Three tiers, exactly how the tag spends its red:
+  //   collection tomorrow  -> flood the date block
+  //   collection in 2 days -> red on the action line only
+  //   anything else        -> no red at all
+  bool floodDate = (diff == 1);
+  bool redAction = (diff == 2);
+
+  const char *action;
+  if (diff == 0)      action = "COLLECTION TODAY";
+  else if (diff == 1) action = "BINS OUT TONIGHT";
+  else if (diff == 2) action = "BINS OUT TOMORROW";
+  else                action = "NEXT COLLECTION";
+
+  // --- date block ---
+  g.fillRect(0, 0, DATE_W, MAIN_H, floodDate ? C_RED : C_PANEL);
+
+  g.setTextSize(1);
+  g.setTextColor(floodDate ? C_ON_RED : C_INK);
+
+  // Day and month sit centred under the numeral rather than ragged-left, so
+  // the block reads as one stack however wide the numeral happens to be.
+  // Stack of three, optically centred in the 144px column:
+  // 13 + 7 + 48 + 7 + 13 = 88, so 28px of air above and below.
+  int dateMid = DATE_W / 2;
+  g.setTextDatum(top_center);
+  g.setFont(&fonts::FreeSansBold9pt7b);
+  g.drawString(DOW3[nextTm.tm_wday], dateMid, 28);
+
+  // Font6 is a native 48px numeric face. Scaling FreeSansBold24pt to 2x got
+  // the size but doubled every stroke and stair-stepped the curves — it read
+  // as chunky rather than bold.
+  g.setFont(&fonts::Font6);
+  g.drawString(String(nextTm.tm_mday), dateMid, 48);
+
+  g.setFont(&fonts::FreeSansBold9pt7b);
+  g.drawString(MON3[nextTm.tm_mon], dateMid, 103);
+
+  // --- action line ---
+  // The widest string here is "BINS OUT TOMORROW". Measure it rather than
+  // trusting it fits: overflow is silently clipped by the panel edge.
+  int bodyX = DATE_W + 16;
+  int bodyW = SCREEN_W - bodyX - 12;
+
+  g.setTextDatum(top_left);
+  g.setFont(&fonts::FreeSansBold9pt7b);
+  g.setTextColor(redAction ? C_RED : C_INK);
+  g.drawString(fitText(g, action, bodyW), bodyX, 20);
+
+  // --- the streams going out that day ---
+  int y = 52;
+  for (JsonVariant v : services) {
+    if (consoleFirstDate(v["collectionDateString"]) != bestRaw) continue;
+    if (y + 22 > MAIN_H) break; // never spill into the status bar
+
+    String service = v["Service"].as<String>();
+    service.toUpperCase();
+
+    g.fillRect(bodyX, y + 2, 8, 18, consoleStreamColour(service));
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    g.setTextColor(C_INK);
+    g.drawString(fitText(g, consoleStreamName(service), bodyW - 18),
+                 bodyX + 18, y);
+
+    y += 28;
+  }
+}
+
+void SchedulingManager::_drawConsoleBar(lgfx::LovyanGFX &g, const struct tm &now,
+                                        bool timeKnown) {
+  g.drawFastHLine(0, MAIN_H, SCREEN_W, C_RULE);
+  g.fillRect(0, MAIN_H + 1, SCREEN_W, BAR_H - 1, C_BAR);
+
+  int barMid = MAIN_H + BAR_H / 2;
+
+  g.setTextSize(1);
+  g.setFont(&fonts::FreeSansBold9pt7b);
+  g.setTextDatum(middle_left);
+  g.setTextColor(C_INK);
+  g.drawString(timeKnown ? two(now.tm_hour) + ":" + two(now.tm_min) : String("--:--"),
+               13, barMid);
+
+  // WiFi strength, four bars.
+  int rssi = WiFi.isConnected() ? WiFi.RSSI() : 0;
+  int level = 0;
+  if (rssi != 0) {
+    if (rssi > -60)      level = 4;
+    else if (rssi > -70) level = 3;
+    else if (rssi > -80) level = 2;
+    else                 level = 1;
+  }
+  for (int i = 0; i < 4; i++) {
+    int h = 4 + i * 3;
+    g.fillRect(74 + i * 5, barMid + 6 - h, 3, h, (i < level) ? C_GARDEN : C_RULE);
+  }
+
+  // How many labels are carrying the current frame.
+  int total = 0, synced = 0;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  for (std::map<String, DeviceStatus>::iterator it = _deviceStatuses.begin();
+       it != _deviceStatuses.end(); ++it) {
+    total++;
+    if (it->second.lastResult) synced++;
+  }
+  xSemaphoreGive(_mutex);
+
+  g.setTextDatum(middle_right);
+  g.setTextColor(C_INK2);
+  if (total > 0) {
+    g.drawString(String(synced) + "/" + String(total) + " labels", SCREEN_W - 13, barMid);
+  } else {
+    g.drawString("no labels", SCREEN_W - 13, barMid);
+  }
+  g.setTextDatum(top_left);
+}
+
+void SchedulingManager::_drawConsoleNetwork(lgfx::LovyanGFX &g) {
+  const int QR_COL = 190;              // where the QR panel starts
+  const int QR_W = SCREEN_W - QR_COL;  // 130
+  const int TEXT_W = QR_COL - 15 - 12; // room a value has before the divider
+
+  g.fillRect(QR_COL, 0, QR_W, SCREEN_H, C_PANEL);
+  g.drawFastVLine(QR_COL, 0, SCREEN_H, C_RULE);
+
+  bool up = WiFi.isConnected();
+  String ip = up ? WiFi.localIP().toString() : String("offline");
+  // No RSSI here: it is already four bars on the schedule screen, and
+  // appending it pushed long SSIDs straight through the divider.
+  String ssid = up ? WiFi.SSID() : String("not connected");
+
+  const char *keys[3] = {"NETWORK", "MANAGE AT", "ADDRESS"};
+  String values[3] = {ssid, String("rubbish.local"), ip};
+
+  g.setTextDatum(top_left);
+  g.setTextSize(1);
+
+  int y = 22;
+  for (int i = 0; i < 3; i++) {
+    g.setFont(&fonts::FreeSansBold9pt7b);
+    g.setTextColor(C_INK3);
+    g.drawString(keys[i], 15, y);
+
+    g.setFont(&fonts::FreeSansBold12pt7b);
+    g.setTextColor(C_INK);
+    g.drawString(fitText(g, values[i], TEXT_W), 15, y + 18);
+    y += 46;
+  }
+
+  // Scan this and you are on the dashboard without typing an IP. No caption:
+  // a QR code explains itself, and the label only stole room from the code.
+  if (up) {
+    int qrSize = 112;
+    g.qrcode("http://" + ip, QR_COL + (QR_W - qrSize) / 2,
+             (SCREEN_H - qrSize) / 2, qrSize, 3);
+  }
 }

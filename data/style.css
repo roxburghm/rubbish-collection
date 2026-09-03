@@ -1,359 +1,823 @@
+/* Rubbish Console
+   One system across three surfaces. The e-ink tag has three inks and no
+   choices, so it sets the rules: paper, ink, and red for the one thing that
+   needs doing. The web and the LCD follow it. */
+
 :root {
-    --bg-color: #121212;
-    --card-bg: #1e1e1e;
-    --primary: #0088ff;
-    --secondary: #03dac6;
-    --text-main: #ffffff;
-    --text-muted: #b0b0b0;
-    --font-family: 'Inter', sans-serif;
+    /* Archivo carries the design but must not be fetched from a CDN — the
+       device serves this page in AP mode with no internet. Drop an
+       archivo.woff2 into data/ and uncomment the @font-face to upgrade. */
+    --font-display: 'Archivo', 'Segoe UI', system-ui, sans-serif;
+    --font-body: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --font-mono: ui-monospace, 'Cascadia Mono', 'Consolas', monospace;
+
+    --ground: #edeae7;
+    --surface: #fbfaf9;
+    --surface-2: #e2ded9;
+    --ink: #171514;
+    --ink-2: #514c48;
+    --ink-3: #7e7873;
+    --rule: #d5d0cb;
+    --rule-strong: #bab3ad;
+
+    --stream-rubbish: #2f2f2b;
+    --stream-recycling: #15589e;
+    --stream-food: #7a4526;
+    --stream-garden: #3a7328;
+
+    --red: #c8241c;
+    --on-red: #fffaf9;
+    --ok: #0d6e7d;
+
+    --paper: #ffffff;
+    --paper-ink: #141414;
+    --paper-red: #c8241c;
+    --paper-edge: #9a938d;
+
+    /* the ESP's own 320x170 panel: a depiction of hardware, so these stay
+       constant whichever theme the browser is in */
+    --dev-ground: #121110;
+    --dev-panel: #201d1b;
+    --dev-rule: #302c2a;
+    --dev-ink: #ece9e6;
+    --dev-ink-2: #a9a3a0;
+    --dev-ink-3: #7d7773;
+    --dev-red: #e23b30;
+    --dev-on-red: #fffaf9;
+    --dev-rubbish: #a9a8a2;
+    --dev-recycling: #6fa8ea;
+    --dev-food: #c4906c;
+    --dev-garden: #7ec267;
+
+    --step--1: 0.78rem;
+    --step-0: 0.95rem;
+    --step-1: 1.15rem;
+
+    --r-sm: 3px;
+    --r-md: 5px;
 }
+
+/* @font-face {
+    font-family: 'Archivo';
+    src: url('/archivo.woff2') format('woff2');
+    font-weight: 500 700;
+    font-display: swap;
+} */
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --ground: #131211;
+        --surface: #1c1a19;
+        --surface-2: #262322;
+        --ink: #ece9e6;
+        --ink-2: #a9a3a0;
+        --ink-3: #7d7773;
+        --rule: #2f2c2a;
+        --rule-strong: #433f3c;
+
+        --stream-rubbish: #a9a8a2;
+        --stream-recycling: #6fa8ea;
+        --stream-food: #c4906c;
+        --stream-garden: #7ec267;
+
+        --red: #f2564a;
+        --on-red: #1a0e0d;
+        --ok: #4cc2d2;
+        --paper-edge: #433f3c;
+    }
+}
+
+:root[data-theme="dark"] {
+    --ground: #131211;
+    --surface: #1c1a19;
+    --surface-2: #262322;
+    --ink: #ece9e6;
+    --ink-2: #a9a3a0;
+    --ink-3: #7d7773;
+    --rule: #2f2c2a;
+    --rule-strong: #433f3c;
+
+    --stream-rubbish: #a9a8a2;
+    --stream-recycling: #6fa8ea;
+    --stream-food: #c4906c;
+    --stream-garden: #7ec267;
+
+    --red: #f2564a;
+    --on-red: #1a0e0d;
+    --ok: #4cc2d2;
+    --paper-edge: #433f3c;
+}
+
+* { box-sizing: border-box; }
 
 body {
     margin: 0;
-    padding: 0;
-    font-family: var(--font-family);
-    background-color: var(--bg-color);
-    color: var(--text-main);
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: var(--step-0);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
 }
 
-.app-container {
-    max-width: 600px;
+.wrap {
+    max-width: 920px;
     margin: 0 auto;
-    padding: 20px;
-}
-
-header {
+    padding: 20px 18px 56px;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 30px;
+    flex-direction: column;
+    gap: 22px;
 }
 
-h1 {
+h1, h2, h3 { font-family: var(--font-display); margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.hidden { display: none !important; }
+
+.eyebrow {
+    font-family: var(--font-display);
     font-weight: 600;
-    font-size: 1.5rem;
-    margin: 0;
+    font-size: 0.68rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
 }
 
-.card {
-    background: var(--card-bg);
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 20px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-}
+/* ---------- header ---------- */
 
-h2 {
-    font-size: 1.2rem;
-    margin-top: 0;
-    margin-bottom: 20px;
-    border-bottom: 1px solid #333;
-    padding-bottom: 10px;
-}
-
-.form-group {
-    margin-bottom: 15px;
-}
-
-label {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--text-muted);
-    font-size: 0.9rem;
-}
-
-input,
-select {
-    padding: 10px;
-    background: #2c2c2c;
-    border: 1px solid #444;
-    color: white;
-    border-radius: 6px;
-    box-sizing: border-box;
-}
-
-.input-group {
+.topbar {
     display: flex;
-    gap: 10px;
     align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule-strong);
 }
 
-.input-group input {
-    flex: 1;
+.brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+.brand h1 { font-size: var(--step-1); font-weight: 700; letter-spacing: -0.01em; line-height: 1.1; }
+.brand .sub { font-size: var(--step--1); color: var(--ink-3); }
+.mark { width: 30px; height: 30px; color: var(--ink-2); flex: none; }
+
+.link-state { display: flex; align-items: center; gap: 8px; font-size: var(--step--1); color: var(--ink-2); }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 15px; }
+.bars i { width: 3px; background: var(--rule-strong); border-radius: 1px; display: block; }
+.bars i:nth-child(1) { height: 5px; }
+.bars i:nth-child(2) { height: 8px; }
+.bars i:nth-child(3) { height: 11px; }
+.bars i:nth-child(4) { height: 15px; }
+.bars.lvl1 i:nth-child(-n+1),
+.bars.lvl2 i:nth-child(-n+2),
+.bars.lvl3 i:nth-child(-n+3),
+.bars.lvl4 i:nth-child(-n+4) { background: var(--ok); }
+.bars.lvl1 i:nth-child(-n+1) { background: var(--red); }
+
+.seg {
+    display: flex;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    background: var(--surface);
+    flex-wrap: wrap;
 }
 
-/* Buttons */
-
-button {
-    background: #333;
-    color: white;
-    border: none;
-    padding: 10px 15px;
-    border-radius: 6px;
-    cursor: pointer;
+.seg button {
+    font: inherit;
+    font-size: var(--step--1);
     font-weight: 500;
-    transition: background 0.2s;
-    white-space: nowrap;
-}
-
-button:hover {
-    background: #444;
-}
-
-button:disabled {
-    cursor: not-allowed;
-}
-
-button.primary {
-    background: var(--primary);
-    color: #000;
-}
-
-button.primary:hover {
-    background: #0088ff;
-}
-
-button.small {
-    padding: 5px 10px;
-    font-size: 0.8rem;
-}
-
-button.danger {
-    background: #c62828;
-}
-
-button.danger:hover {
-    background: #e53935;
-}
-
-button.loading {
-    opacity: 0.7;
-}
-
-button.disabled {
-    background: #ccc;
-    color: #666;
-    cursor: not-allowed;
-}
-
-/* WiFi Signal Indicator */
-
-.wifi-indicator {
-    display: flex;
-    align-items: center;
-    cursor: default;
-}
-
-.wifi-bar {
-    fill: #333;
-    transition: fill 0.3s;
-}
-
-/* Modal */
-
-.modal {
-    display: none;
-    position: fixed;
-    z-index: 100;
-    left: 0;
-    top: 0;
-    width: 100%;
-    height: 100%;
-    background-color: rgba(0, 0, 0, 0.5);
-}
-
-.modal-content {
-    background-color: var(--card-bg);
-    margin: 15% auto;
-    padding: 20px;
-    border: 1px solid #888;
-    width: 90%;
-    max-width: 400px;
-    border-radius: 8px;
-}
-
-.modal .close {
-    color: #aaa;
-    float: right;
-    font-size: 28px;
-    font-weight: bold;
+    border: 0;
+    background: transparent;
+    color: var(--ink-2);
+    padding: 7px 11px;
     cursor: pointer;
 }
 
-.modal-action {
-    margin-top: 10px;
+.seg button + button { border-left: 1px solid var(--rule); }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--ground); }
+
+/* ---------- hero: the tear-off the tag and the LCD also use ---------- */
+
+.hero {
+    display: grid;
+    grid-template-columns: minmax(146px, auto) 1fr;
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
+    overflow: hidden;
 }
 
-/* Device List */
+/* The date stack is centred as one block, matching the LCD and the tag —
+   ragged-left left it looking adrift in a column it never filled. */
+.tearoff {
+    background: var(--ink);
+    color: var(--ground);
+    padding: 16px 22px 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    justify-content: center;
+    border-right: 1px solid var(--rule-strong);
+}
 
-.device-item {
+.tearoff.act { background: var(--red); color: var(--on-red); border-right-color: var(--red); }
+
+.chip {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 0.66rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 2px;
+    margin-bottom: 13px;
+    border: 1px solid currentColor;
+}
+
+.daynum {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(3.3rem, 10vw, 4.4rem);
+    line-height: 0.82;
+    letter-spacing: -0.04em;
+    font-variant-numeric: tabular-nums;
+}
+
+.dow { font-family: var(--font-display); font-weight: 600; font-size: var(--step-1); margin-top: 10px; }
+.dow span { opacity: 0.66; }
+
+.hero-main { display: flex; flex-direction: column; }
+
+.action-bar {
+    padding: 15px 18px 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    border-bottom: 1px solid var(--rule);
+}
+
+.action {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(1.3rem, 4.2vw, 1.75rem);
+    letter-spacing: -0.015em;
+    line-height: 1.05;
+    color: var(--red);
+}
+
+.action-bar.calm .action { color: var(--ink); }
+.action-note { font-size: var(--step--1); color: var(--ink-2); }
+
+.hero-streams { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.hero-streams li { display: flex; gap: 13px; align-items: center; padding: 12px 18px; }
+.hero-streams li + li { border-top: 1px solid var(--rule); }
+.hero-streams h3 { font-size: var(--step-1); font-weight: 600; letter-spacing: -0.01em; }
+.hero-streams p { font-size: var(--step--1); color: var(--ink-3); }
+
+.swatch {
+    width: 14px;
+    height: 24px;
+    border-radius: 2px;
+    background: var(--s);
+    flex: none;
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18);
+}
+
+.hero-rest {
+    padding: 10px 18px;
+    border-top: 1px solid var(--rule);
+    font-size: var(--step--1);
+    color: var(--ink-2);
+    grid-column: 1 / -1;
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    background: #2a2a2a;
-    padding: 10px;
-    border-radius: 6px;
-    margin-bottom: 5px;
+    gap: 12px;
+    flex-wrap: wrap;
+    background: var(--surface-2);
 }
 
-.device-item .actions {
+/* ---------- blocks ---------- */
+
+.block { display: flex; flex-direction: column; gap: 11px; }
+.block-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.block-head h2 { font-size: var(--step-0); font-weight: 600; }
+.block-head .hint { font-size: var(--step--1); color: var(--ink-3); margin-left: auto; }
+.block-head .btn { margin-left: auto; }
+
+/* ---------- fortnight strip ---------- */
+
+.strip {
     display: flex;
+    overflow-x: auto;
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
+    background: var(--surface);
+}
+
+.day {
+    flex: 1 0 58px;
+    min-width: 58px;
+    padding: 9px 6px 11px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+}
+
+.day + .day { border-left: 1px solid var(--rule); }
+
+.day .dl {
+    font-family: var(--font-display);
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 600;
+}
+
+.day .dn {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: var(--step-0);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    height: 23px;
+    width: 23px;
+    display: grid;
+    place-items: center;
+}
+
+/* Weekends stay a whisper — they are context, not information. */
+.day.weekend { background: color-mix(in srgb, var(--surface-2) 55%, transparent); }
+
+/* A collection day is the thing worth spotting, so it gets the real
+   emphasis: a ringed cell and a heavier numeral. */
+.day.coll {
+    background: var(--surface-2);
+    box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.day.coll .dn { font-weight: 700; }
+.day.today .dl { color: var(--ink); font-weight: 700; }
+.dots { display: flex; gap: 3px; height: 8px; }
+
+.dots i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--s);
+    display: block;
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18);
+}
+
+.legend { display: flex; gap: 15px; flex-wrap: wrap; font-size: var(--step--1); color: var(--ink-2); }
+.legend span { display: flex; align-items: center; gap: 6px; }
+.legend i { width: 9px; height: 9px; border-radius: 50%; background: var(--s); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18); }
+.legend .ring { width: 11px; height: 11px; background: transparent; box-shadow: inset 0 0 0 2px var(--red); }
+
+/* ---------- all streams ---------- */
+
+.sched {
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
+    background: var(--surface);
+    overflow: hidden;
+}
+
+.srow {
+    display: grid;
+    grid-template-columns: 14px 1fr auto auto;
+    gap: 13px;
+    align-items: center;
+    padding: 11px 15px;
+}
+
+.srow + .srow { border-top: 1px solid var(--rule); }
+.srow .bar { width: 14px; height: 14px; border-radius: 2px; background: var(--s); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18); }
+.srow .nm { font-weight: 500; }
+.srow .when { font-size: var(--step--1); color: var(--ink-2); text-align: right; }
+.srow .dt { font-size: var(--step--1); color: var(--ink-3); min-width: 6.5em; text-align: right; }
+.srow.soon .when { color: var(--red); font-weight: 600; }
+
+/* ---------- the tag: exactly 296 x 128 device pixels ----------
+   2.9" panel, so 1px is 0.23mm. Every size is a real pixel count and the
+   zoom only magnifies, never redistributes. */
+
+.tag {
+    width: 296px;
+    height: 128px;
+    flex: none;
+    overflow: hidden;
+    zoom: var(--tag-zoom, 0.86);
+    background: var(--paper);
+    border: 1px solid var(--paper-edge);
+    border-radius: 2px;
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    color: var(--paper-ink);
+    font-family: var(--font-display);
+    line-height: 1;
+    transition: transform 0.35s ease;
+}
+
+.tag.flipped { transform: rotate(180deg); }
+
+/* Centred as one stack, matching what the firmware now draws. The numeral
+   uses a cropped line-height: a 48px glyph carries ~14px of ascender and
+   descender space it never fills, which read as a gap under the 7. */
+.tag-date {
+    background: var(--paper-ink);
+    color: var(--paper);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
     gap: 5px;
 }
 
-.device-info {
+.tag-date.red { background: var(--paper-red); }
+.tag-date .dw, .tag-date .dm { font-size: 12px; font-weight: 700; letter-spacing: 1.6px; line-height: 1; opacity: 0.85; }
+.tag-date .dn { font-size: 48px; font-weight: 700; letter-spacing: -1.5px; line-height: 0.76; margin: 0; }
+/* The firmware closes this stack with an update stamp, so the mirror does too. */
+.tag-date .ds { font-size: 8px; font-weight: 600; letter-spacing: 0.3px; line-height: 1; opacity: 0.7; margin-top: 2px; }
+
+.tag-body { display: flex; flex-direction: column; padding: 9px 10px 7px; min-width: 0; }
+.tag-act { font-size: 11px; font-weight: 700; letter-spacing: 0.7px; white-space: nowrap; }
+.tag-act.red { color: var(--paper-red); }
+.tag-streams { flex: 1; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.tag-streams b { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; line-height: 1.18; white-space: nowrap; }
+
+.tag-foot {
+    border-top: 1px solid var(--paper-ink);
+    padding-top: 4px;
+    display: flex;
+    gap: 11px;
+    font-size: 9px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.tag-stale {
+    grid-column: 1 / -1;
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    color: var(--paper-edge);
+}
+
+/* Previews of the non-schedule frames, so picking one in "Send to label"
+   shows what the tag will actually be made to display. */
+.tag.plain { grid-template-columns: 1fr; }
+
+.tag-centre {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    text-align: center;
+}
+
+.tag-centre .big { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+.tag-centre .mac { font-size: 12px; font-weight: 700; color: var(--paper-red); letter-spacing: 0.4px; }
+.tag.border-red { box-shadow: inset 0 0 0 2px var(--paper-red); }
+.tag.border-red2 { box-shadow: inset 0 0 0 4px var(--paper-red); }
+
+.tag-checks {
+    position: absolute;
+    inset: 6px;
+    background-image:
+        linear-gradient(45deg, #d8d8d8 25%, transparent 25%, transparent 75%, #d8d8d8 75%),
+        linear-gradient(45deg, #d8d8d8 25%, transparent 25%, transparent 75%, #d8d8d8 75%);
+    background-size: 24px 24px;
+    background-position: 0 0, 12px 12px;
+}
+
+.tag.plain { position: relative; }
+.tag-centre { position: relative; z-index: 1; }
+
+/* ---------- the LCD: exactly 320 x 170 device pixels ----------
+   1.9" panel, so 1px is 0.13mm — barely half the tag's. Nothing here
+   goes below 11px or it is unreadable on the real hardware. */
+
+.lcd-frame { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 100%; }
+.lcd-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.lcd-scroll { max-width: 100%; overflow-x: auto; padding-bottom: 4px; }
+.scale-note { font-size: 0.72rem; color: var(--ink-3); font-family: var(--font-mono); }
+
+.lcd {
+    width: 320px;
+    height: 170px;
+    flex: none;
+    position: relative;
+    overflow: hidden;
+    zoom: var(--lcd-zoom, 1);
+    background: var(--dev-ground);
+    color: var(--dev-ink);
+    border: 1px solid var(--rule-strong);
+    border-radius: 7px;
+    font-family: var(--font-display);
+    line-height: 1;
+}
+
+.lcd-screen { position: absolute; inset: 0; display: grid; }
+.lcd-screen[hidden] { display: none; }
+
+.lcd-sched { grid-template-columns: 122px 1fr; grid-template-rows: 1fr auto; }
+
+.lcd-date {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: var(--dev-panel);
+    gap: 6px;
+}
+
+.lcd-date.red { background: var(--dev-red); color: var(--dev-on-red); }
+.lcd-date .dw, .lcd-date .dm { font-size: 14px; font-weight: 700; letter-spacing: 2px; line-height: 1; opacity: 0.85; }
+/* 48px, not 68: the firmware draws this in Font6, and the mirror is only
+   worth having if it tells the truth about the size. */
+.lcd-date .dn { font-size: 48px; font-weight: 700; line-height: 0.76; letter-spacing: -1.5px; margin: 0; }
+
+.lcd-body { display: flex; flex-direction: column; min-width: 0; padding: 13px 14px 6px; }
+
+/* 14px, not 15: "BINS OUT TOMORROW" is the longest string this has to
+   carry and it must clear 170px of column with room to spare. */
+/* Same rule as .tag-act: red only when the date block is NOT flooded, so
+   the two-days-out warning still reads and tonight never doubles up. */
+.lcd-act { font-size: 14px; font-weight: 700; letter-spacing: 0.6px; color: var(--dev-ink); white-space: nowrap; }
+.lcd-act.red { color: var(--dev-red); }
+
+.lcd-streams { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
+.lcd-streams div { display: flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 700; white-space: nowrap; }
+.lcd-streams i { width: 8px; height: 17px; border-radius: 1px; background: var(--s); flex: none; }
+
+.lcd-bar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 13px;
+    border-top: 1px solid var(--dev-rule);
+    background: #191614;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--dev-ink-3);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.lcd-bar .t { color: var(--dev-ink); font-size: 14px; }
+.lcd-bar .ok { color: var(--dev-garden); }
+.lcd-bar .push { margin-left: auto; }
+.lcd-bars { display: flex; align-items: flex-end; gap: 1.5px; height: 13px; }
+.lcd-bars i { width: 3px; background: var(--dev-rule); border-radius: 1px; display: block; }
+.lcd-bars i:nth-child(1) { height: 35%; }
+.lcd-bars i:nth-child(2) { height: 57%; }
+.lcd-bars i:nth-child(3) { height: 78%; }
+.lcd-bars i:nth-child(4) { height: 100%; }
+.lcd-bars.lvl1 i:nth-child(-n+1),
+.lcd-bars.lvl2 i:nth-child(-n+2),
+.lcd-bars.lvl3 i:nth-child(-n+3),
+.lcd-bars.lvl4 i:nth-child(-n+4) { background: var(--dev-garden); }
+
+.lcd-net { grid-template-columns: 1fr 120px; }
+.lcd-info { display: flex; flex-direction: column; justify-content: center; gap: 9px; padding: 0 15px; }
+.lcd-k { font-size: 11px; letter-spacing: 1.4px; font-weight: 700; color: var(--dev-ink-3); text-transform: uppercase; }
+.lcd-v { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; margin-top: 2px; }
+.lcd-qr { display: grid; place-items: center; gap: 6px; border-left: 1px solid var(--dev-rule); background: #191614; }
+.lcd-qr .cap { font-size: 9px; letter-spacing: 1.2px; font-weight: 700; color: var(--dev-ink-3); }
+.lcd-qr img, .lcd-qr canvas { width: 88px; height: 88px; background: #fff; padding: 4px; border-radius: 2px; }
+.lcd-note { font-size: var(--step--1); color: var(--ink-2); max-width: 64ch; }
+
+/* ---------- labels ---------- */
+
+.labels { display: grid; grid-template-columns: repeat(auto-fit, minmax(292px, 1fr)); gap: 14px; }
+
+.label-card {
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
     display: flex;
     flex-direction: column;
 }
 
-.device-mac {
+.label-card.attention { border-color: var(--red); }
+.lc-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 15px 12px; }
+.lc-head .nm { font-family: var(--font-display); font-weight: 600; font-size: var(--step-1); line-height: 1.2; overflow-wrap: anywhere; }
+.lc-head .sub { font-size: var(--step--1); color: var(--ink-3); display: block; margin-top: 3px; }
+
+.state {
+    margin-left: auto;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-display);
     font-weight: 600;
+    font-size: 0.68rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    padding: 3px 7px;
+    white-space: nowrap;
 }
 
-.device-controls {
+.state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.state.ok { color: var(--ok); }
+.state.working { color: var(--ink-3); }
+.state.fail { color: var(--red); }
+.state.working::before { animation: beat 1.9s ease-in-out infinite; }
+
+@keyframes beat {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+}
+
+.lc-meta { padding: 0 15px 13px; display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: var(--step--1); margin: 0; }
+.lc-meta dt { color: var(--ink-3); }
+.lc-meta dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); }
+.lc-meta dd.warn { color: var(--red); }
+
+.preview-zone { padding: 0 15px 14px; display: flex; flex-direction: column; gap: 7px; }
+.preview-zone .eyebrow { font-size: 0.62rem; }
+
+.lc-actions {
+    margin-top: auto;
+    border-top: 1px solid var(--rule);
+    padding: 12px 15px;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 11px;
 }
 
-/* Rotation Button */
+/* ---------- forms ---------- */
 
-.rotate-btn {
-    padding: 4px 10px;
-    border: none;
+.field { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.field label, .field .flabel { font-size: var(--step--1); color: var(--ink-2); font-weight: 500; }
+.field .row, .field select, .field input { width: 100%; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row .grow { flex: 1 1 130px; }
+.hint-sm { font-size: var(--step--1); color: var(--ink-3); }
+
+select, input[type=text], input[type=password] {
+    font: inherit;
+    font-size: var(--step--1);
+    background: var(--ground);
+    color: var(--ink);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-sm);
+    padding: 8px 9px;
+    min-height: 40px;
+    width: 100%;
+}
+
+button { font: inherit; }
+
+.btn {
+    font-size: var(--step--1);
+    font-weight: 600;
+    background: var(--surface-2);
+    color: var(--ink);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-sm);
+    padding: 9px 14px;
+    min-height: 40px;
     cursor: pointer;
-    background: #333;
-    border-radius: 6px;
-    color: var(--text-muted);
-    transition: transform 0.3s ease, color 0.3s ease;
+    white-space: nowrap;
+    transition: background 0.15s ease, border-color 0.15s ease;
 }
 
-.rotate-btn svg {
-    display: block;
-}
+.btn:hover { background: var(--rule); }
+.btn-solid { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+.btn-solid:hover { background: var(--ink-2); border-color: var(--ink-2); }
+.btn-quiet { background: transparent; border-color: transparent; color: var(--ink-2); padding-inline: 9px; }
+.btn-quiet:hover { background: var(--surface-2); color: var(--red); }
+.btn[disabled] { opacity: 0.55; cursor: default; }
+.btn[disabled]:hover { background: var(--surface-2); }
 
-.rotate-btn.rotated svg {
-    transform: rotate(180deg);
-}
+.toast { font-size: var(--step--1); color: var(--ok); min-height: 1.2em; }
+.toast.bad { color: var(--red); }
 
-.rotate-btn:hover {
-    background: #444;
-}
+/* ---------- settings ---------- */
 
-/* Device Status Colors */
+details.settings { border: 1px solid var(--rule-strong); border-radius: var(--r-md); background: var(--surface); }
 
-.status-ok {
-    color: #4CAF50;
-}
-
-.status-fail {
-    color: #F44336;
-}
-
-.status-new {
-    color: #888;
-}
-
-.status-seen {
-    color: #888;
-    font-size: 0.8rem;
-}
-
-.status-retry {
-    color: #FF9800;
-    font-weight: bold;
-}
-
-.status-pending {
-    color: #2196F3;
-    font-weight: bold;
-}
-
-/* Collection Items */
-
-.collection-item {
+details.settings > summary {
+    cursor: pointer;
+    padding: 13px 15px;
+    list-style: none;
     display: flex;
     align-items: center;
-    background: #2a2a2a;
-    padding: 15px;
-    border-radius: 8px;
-    margin-bottom: 10px;
+    gap: 9px;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: var(--step-0);
 }
 
-.bin-icon {
-    font-size: 1.5rem;
-    margin-right: 15px;
-}
+details.settings > summary::-webkit-details-marker { display: none; }
+details.settings > summary::after { content: "+"; margin-left: auto; color: var(--ink-3); font-weight: 500; font-size: var(--step-1); }
+details.settings[open] > summary::after { content: "\2013"; }
+details.settings[open] > summary { border-bottom: 1px solid var(--rule); }
+.settings-body { padding: 15px; display: grid; gap: 16px 18px; align-items: start; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: var(--step--1); margin: 0; }
+.kv dt { color: var(--ink-3); }
+/* break-all split "LONDON" mid-word. Prefer spaces, and only break inside
+   a word when a single token genuinely cannot fit. */
+.kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; color: var(--ink-2); overflow-wrap: break-word; }
 
-.bin-details h3 {
-    margin: 0 0 5px 0;
-    font-size: 1rem;
-}
-
-.bin-details p {
+.raw {
     margin: 0;
-    color: var(--text-muted);
-    font-size: 0.9rem;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--ink-2);
+    background: var(--ground);
+    border: 1px solid var(--rule);
+    border-radius: var(--r-sm);
+    padding: 11px 12px;
+    max-height: 340px;
+    overflow: auto;
+    white-space: pre;
 }
 
-/* Pending Update Styling */
-.device-item.pending-update {
-    border-left: 4px solid #FF9800;
-    /* Orange border */
-}
+/* ---------- modal ---------- */
 
-.status-pending-badge {
-    color: #FF9800;
-    font-weight: bold;
-    font-size: 0.8rem;
-    margin-left: 5px;
-    animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-    0% {
-        opacity: 0.6;
-    }
-
-    50% {
-        opacity: 1;
-    }
-
-    100% {
-        opacity: 0.6;
-    }
-}
-
-/* Status Info */
-
-.status-info {
-    margin-bottom: 10px;
-    color: #888;
-    font-size: 0.9rem;
-    text-align: center;
-}
-
-/* Utilities */
-
-.muted {
-    color: #666;
-}
-
-.centered {
-    text-align: center;
-}
-
-.hint {
-    font-size: 0.8rem;
-    color: #888;
-    margin-top: 4px;
-}
-
-/* Footer */
-
-.app-footer {
-    text-align: center;
+.modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgb(0 0 0 / 0.55);
     padding: 20px;
-    color: #666;
-    font-size: 0.8rem;
+    overflow-y: auto;
+}
+
+.modal.open { display: block; }
+
+.modal-content {
+    background: var(--surface);
+    border: 1px solid var(--rule-strong);
+    border-radius: var(--r-md);
+    margin: 6vh auto;
+    padding: 18px;
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.modal-head { display: flex; align-items: center; gap: 10px; }
+.modal-head h2 { font-size: var(--step-1); font-weight: 600; }
+.modal-head .btn-quiet { margin-left: auto; font-size: 1.2rem; line-height: 1; padding: 4px 10px; min-height: 0; }
+#reader:empty { display: none; }
+#reader { border-radius: var(--r-sm); overflow: hidden; }
+
+/* ---------- footer ---------- */
+
+footer {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    border-top: 1px solid var(--rule-strong);
+    padding-top: 15px;
+    font-size: var(--step--1);
+    color: var(--ink-3);
+}
+
+footer .mono { color: var(--ink-2); }
+
+/* Scoped to things you can actually operate, and in ink rather than red:
+   red means "act on this" everywhere else here, so spending it on a focus
+   ring made every keyboard step look like an alert. */
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+@media (max-width: 560px) {
+    .hero { grid-template-columns: 1fr; }
+    .tearoff { border-right: 0; border-bottom: 1px solid var(--rule-strong); }
+    .srow { grid-template-columns: 14px 1fr auto; gap: 10px; }
+    .srow .dt { display: none; }
+    .block-head .hint, .block-head .btn { margin-left: 0; }
 }

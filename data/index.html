@@ -4,116 +4,181 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rubbish Collection Server</title>
-    <link rel="stylesheet" href="style.css?v=6">
+    <title>Rubbish Console</title>
+    <link rel="stylesheet" href="style.css?v=8">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Scanner is optional: the page works without it, and it cannot load
+         during AP-mode setup when the device has no route to the internet. -->
     <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
 </head>
 
 <body>
-    <!-- SVG Definitions -->
-    <svg style="display: none;">
-        <symbol id="icon-bin" viewBox="0 0 256 256">
-            <path fill="currentColor"
-                d="M85.2,10.3c-2.7,0.6-3.9,1.1-6.1,2.7c-2.4,1.8-4.7,5.5-5,8.4c-0.3,2.1-0.4,2.2-2,2.4c-5.8,0.9-10.1,2.7-13.4,5.7c-2,1.7-4.1,5-4.8,7.3L53.5,38h59.8h59.8l1.1,1.2c2,1.9,1.3,4.8-1.3,5.8c-0.8,0.3-21.6,0.5-63.7,0.5H46.6v5.5v5.5h3.9h3.9l0.3,1.9c0.1,1.1,4.4,43.6,9.5,94.4c5.1,50.8,9.4,92.6,9.5,92.8c0.3,0.5,67.1,0.6,67.1,0.1c0-0.1-1-1.4-2.3-2.8c-2.6-2.8-5.2-7.8-6.2-11.9c-0.9-3.5-0.9-10.2,0-14c1.8-7.4,7.8-15.2,14.3-18.5c5.7-3,7.6-3.4,14.4-3.4c4.6,0,6.1-0.1,6.1-0.6c0-2.4,12-119.8,12.3-120c0.2-0.2,6.5-5.2,14-11.2c10.1-8,13.9-11.3,14.7-12.7c1.5-2.6,1.8-6.2,0.8-9.3c-0.7-2.2-1.6-3.3-7.6-9.2c-6.1-6.1-7-6.8-9.2-7.5c-2.2-0.6-6.8-0.7-38.7-0.7h-36.1v-1.6c0-0.9-0.6-2.9-1.5-4.5c-1.6-3.1-4.6-5.8-7.6-6.9C106,10.1,88,9.7,85.2,10.3z M105.4,19.7c1.6,0.6,2.5,1.9,2.5,3.2c0,0.6-1.5,0.7-12.5,0.7c-11.6,0-12.5,0-12.5-0.8c0-1.1,1.4-2.7,2.8-3.3C87.7,18.8,103.6,18.9,105.4,19.7z M200.7,41.4c4.2,2.2,2.3,8.5-2.5,8.5c-0.6,0-1.8-0.6-2.7-1.3c-1.2-1.1-1.5-1.7-1.5-3.3c0-1.6,0.3-2.2,1.5-3.3C197.2,40.6,198.7,40.4,200.7,41.4z M124,68c1.3,1.2,1.4,3.1,0.2,4.6l-0.9,1.1l-13.7,0.1c-11.9,0.1-13.8,0-14.9-0.6c-1.4-1-2-2.4-1.4-3.9c0.8-2.3,1-2.3,15.8-2.3C122.6,67,122.9,67,124,68z" />
-            <path fill="#000000"
-                d="M155.6,202.8c-7.7,1.9-14,8.1-16,15.7c-1.9,7.3,0,14.6,5.4,20.3c11.6,12.4,32.3,7.1,36.8-9.5c0.8-3.1,0.6-8.6-0.4-11.9C178,206.7,166.6,200.2,155.6,202.8z M163.8,217.5c2.8,1.4,4.2,3.6,4.2,6.5c0,7.3-9,10-13.5,3.9c-2.4-3.2-0.9-8.4,2.9-10.4C159.8,216.2,161.2,216.2,163.8,217.5z" />
-        </symbol>
-        <symbol id="icon-id-card" viewBox="0 0 24 24">
-            <path fill="currentColor"
-                d="M22,3H2C0.91,3.04 0.04,3.91 0,5V19C0.04,20.09 0.91,20.96 2,21H22C23.09,20.96 23.96,20.09 24,19V5C23.96,3.91 23.09,3.04 22,3M22,19H2V5H22V19M14,17V15.75C14,14.09 10.66,13.25 9,13.25C7.34,13.25 4,14.09 4,15.75V17H14M9,7A2.5,2.5 0 0,0 6.5,9.5A2.5,2.5 0 0,0 9,12A2.5,2.5 0 0,0 11.5,9.5A2.5,2.5 0 0,0 9,7M14,7V8H20V7H14M14,9V10H20V9H14M14,11V12H18V11H14" />
-        </symbol>
-    </svg>
 
-    <!-- Add Device Modal -->
+    <!-- Pair Label Modal -->
     <div id="add-device-modal" class="modal">
         <div class="modal-content">
-            <span class="close" onclick="closeModal()">&times;</span>
-            <h2>Add Device</h2>
+            <div class="modal-head">
+                <h2>Pair a label</h2>
+                <button class="btn btn-quiet" onclick="closeModal()" aria-label="Close">&times;</button>
+            </div>
+
             <div id="reader"></div>
 
-            <div class="form-group">
-                <label>Manual MAC Address</label>
-                <input type="text" id="manual-mac" placeholder="XX:XX:XX:XX:XX:XX">
-                <p class="hint">Enter MAC with colons, or scan Code 128</p>
+            <div class="field">
+                <label for="manual-mac">MAC address</label>
+                <input type="text" id="manual-mac" placeholder="A4:C1:38:00:00:00" autocomplete="off">
+                <span class="hint-sm">Type it with colons, or scan the Code 128 barcode on the label.</span>
             </div>
-            <button onclick="addManualDevice()" class="primary">Add Device</button>
-            <button onclick="startCamera()" class="modal-action">Scan Camera</button>
-            <button onclick="stopCamera()" class="modal-action" id="stop-cam-btn" style="display:none;">Stop
-                Camera</button>
+
+            <div class="row">
+                <button onclick="addManualDevice()" class="btn btn-solid">Pair label</button>
+                <button onclick="startCamera()" class="btn" id="scan-btn">Scan barcode</button>
+                <button onclick="stopCamera()" class="btn hidden" id="stop-cam-btn">Stop camera</button>
+            </div>
+            <p class="toast" id="modal-toast"></p>
         </div>
     </div>
 
-    <div class="app-container">
-        <header>
-            <h1>Rubbish Collection</h1>
-            <div class="wifi-indicator" id="wifi-status" title="Checking WiFi...">
-                <svg viewBox="0 0 24 24" width="28" height="28">
-                    <rect class="wifi-bar" data-bar="1" x="2" y="18" width="4" height="5" rx="1" />
-                    <rect class="wifi-bar" data-bar="2" x="8" y="13" width="4" height="10" rx="1" />
-                    <rect class="wifi-bar" data-bar="3" x="14" y="8" width="4" height="15" rx="1" />
-                    <rect class="wifi-bar" data-bar="4" x="20" y="3" width="4" height="20" rx="1" />
+    <div class="wrap">
+
+        <div class="topbar">
+            <div class="brand">
+                <svg class="mark" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor"
+                    stroke-width="1.3" stroke-linecap="round">
+                    <path d="M4.2 6.8h15.6l-1.2 13.3a1.9 1.9 0 0 1-1.9 1.7H7.3a1.9 1.9 0 0 1-1.9-1.7L4.2 6.8Z" />
+                    <path d="M2.8 6.8h18.4" />
+                    <path d="M9.2 6.8V4.6a1 1 0 0 1 1-1h3.6a1 1 0 0 1 1 1v2.2" />
+                    <path d="M9.6 10.8v7.6M12 10.8v7.6M14.4 10.8v7.6" />
                 </svg>
+                <div>
+                    <h1>Rubbish Console</h1>
+                    <p class="sub" id="brand-sub">Loading&hellip;</p>
+                </div>
             </div>
-        </header>
 
-        <main>
-            <!-- Setup Section -->
-            <section id="setup-section" class="card">
-                <h2>Configuration</h2>
-                <div class="form-group">
-                    <label>Postcode</label>
-                    <div class="input-group">
-                        <input type="text" id="postcode" placeholder="W5 3JS">
-                        <button onclick="searchAddress()">Search</button>
+            <div class="link-state" id="wifi-status" title="Checking WiFi...">
+                <span class="bars" id="wifi-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                <span id="wifi-text">&mdash;</span>
+            </div>
+
+            <div class="seg" role="group" aria-label="Colour theme">
+                <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+                <button type="button" data-theme-set="auto" aria-pressed="true">Auto</button>
+                <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+            </div>
+        </div>
+
+        <!-- Next collection -->
+        <section class="hero" aria-labelledby="act-h">
+            <div class="tearoff" id="hero-tear">
+                <span class="chip" id="hero-chip">&mdash;</span>
+                <span class="daynum" id="hero-num">&ndash;</span>
+                <span class="dow"><span id="hero-dow">&mdash;</span> <span id="hero-mon"></span></span>
+            </div>
+            <div class="hero-main">
+                <div class="action-bar calm" id="hero-actbar">
+                    <p class="action" id="act-h">Waiting for schedule</p>
+                    <p class="action-note" id="hero-note">The device has not fetched a collection yet.</p>
+                </div>
+                <ul class="hero-streams" id="hero-streams"></ul>
+            </div>
+            <div class="hero-rest">
+                <span id="hero-then"></span>
+                <span id="hero-checked"></span>
+            </div>
+        </section>
+
+        <!-- Fortnight -->
+        <section class="block" aria-labelledby="fn-h">
+            <div class="block-head">
+                <span class="eyebrow">Round</span>
+                <h2 id="fn-h">Next fortnight</h2>
+                <span class="hint" id="fn-hint"></span>
+            </div>
+            <div class="strip" id="fortnight" role="list"></div>
+            <div class="legend">
+                <span><i style="--s:var(--stream-rubbish)"></i> Rubbish</span>
+                <span><i style="--s:var(--stream-recycling)"></i> Recycling</span>
+                <span><i style="--s:var(--stream-food)"></i> Food waste</span>
+                <span><i style="--s:var(--stream-garden)"></i> Garden waste</span>
+            </div>
+        </section>
+
+        <!-- All streams -->
+        <section class="block" aria-labelledby="up-h">
+            <div class="block-head">
+                <span class="eyebrow">Schedule</span>
+                <h2 id="up-h">All streams</h2>
+                <button class="btn" type="button" id="refresh-btn" onclick="refreshData()">Check council now</button>
+            </div>
+            <div class="sched" id="stream-list"></div>
+            <p class="toast" id="refresh-toast"></p>
+        </section>
+
+        <!-- E-ink labels -->
+        <section class="block" aria-labelledby="lb-h">
+            <div class="block-head">
+                <span class="eyebrow">Hardware</span>
+                <h2 id="lb-h">E-ink labels</h2>
+                <button class="btn btn-solid" type="button" onclick="openModal()">Pair a label</button>
+            </div>
+            <div class="labels" id="device-list"></div>
+        </section>
+
+        <!-- Settings -->
+        <details class="settings">
+            <summary>Property &amp; system</summary>
+            <div class="settings-body">
+                <div class="field">
+                    <label for="postcode">Postcode</label>
+                    <div class="row">
+                        <input type="text" id="postcode" class="grow" placeholder="W5 3JS" autocomplete="postal-code">
+                        <button class="btn" type="button" id="find-btn" onclick="searchAddress()">Find</button>
                     </div>
                 </div>
 
-                <div class="form-group" id="address-select-group" style="display:none;">
-                    <label>Select Address</label>
-                    <select id="address-select"></select>
-                    <button onclick="saveAddress()" class="primary">Save Address</button>
-                </div>
-
-                <div class="current-config">
-                    <p>UPRN: <span id="current-uprn">Loading...</span></p>
-                    <p>Address: <span id="current-address">Loading...</span></p>
-                </div>
-            </section>
-
-            <!-- Dashboard Section -->
-            <section id="dashboard-section" class="card">
-                <h2>Next Collection</h2>
-                <div id="collection-preview">
-                    <p class="muted centered">Loading schedule...</p>
-                </div>
-                <button onclick="refreshData()">Force Refresh</button>
-            </section>
-
-            <!-- Devices Section -->
-            <section id="devices-section" class="card">
-                <h2>E-Ink Displays</h2>
-                <div class="device-list" id="device-list">
-                    <div class="device-item">
-                        <span>Scanning for devices...</span>
+                <div class="field" id="address-select-group" hidden>
+                    <label for="address-select">Property</label>
+                    <div class="row">
+                        <select id="address-select" class="grow"></select>
+                        <button onclick="saveAddress()" class="btn btn-solid" id="save-addr-btn">Save</button>
                     </div>
                 </div>
-                <div class="actions">
-                    <button onclick="openModal()">Add Device</button>
-                </div>
-            </section>
-        </main>
 
-        <footer class="app-footer"
-            style="display: flex; justify-content: space-between; align-items: center; padding: 10px 20px;">
-            <p>Firmware Built: <span id="fw-version">Loading...</span></p>
-            <a href="/update" target="_blank"
-                style="text-decoration: none; background: #ea4335; color: white; padding: 6px 12px; border-radius: 4px; font-weight: 600; font-size: 0.9em;">OTA
-                Update</a>
+                <dl class="kv">
+                    <dt>Property</dt>
+                    <dd id="current-address">&mdash;</dd>
+                    <dt>UPRN</dt>
+                    <dd id="current-uprn">&mdash;</dd>
+                    <dt>Next poll</dt>
+                    <dd id="next-poll">&mdash;</dd>
+                </dl>
+            </div>
+            <p class="toast" id="config-toast" style="padding:0 15px 14px"></p>
+        </details>
+
+        <details class="settings" id="raw-details">
+            <summary>Council API response</summary>
+            <div class="settings-body" style="grid-template-columns:1fr">
+                <div class="row">
+                    <button class="btn" type="button" onclick="loadRaw()">Reload</button>
+                    <span class="hint-sm">Exactly what <span class="mono">/api/schedule</span> returned.
+                        <span class="mono">collectionSchedule</span> is what tells us weekly from fortnightly.</span>
+                </div>
+                <pre class="raw" id="raw-json">Open to load&hellip;</pre>
+            </div>
+        </details>
+
+        <footer>
+            <span>Firmware <span class="mono" id="fw-version">&mdash;</span></span>
+            <a class="btn" href="/console.html" style="text-decoration:none">Onboard screen</a>
+            <a class="btn" href="/update" target="_blank" rel="noopener"
+                style="margin-left:auto;text-decoration:none">Update firmware</a>
         </footer>
+
     </div>
-    <script src="app.js?v=6"></script>
+
+    <script src="app.js?v=8"></script>
 </body>
 
 </html>

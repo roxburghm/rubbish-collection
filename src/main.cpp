@@ -91,7 +91,13 @@ void setup() {
     Serial.println("System Ready.");
 }
 
-// Separate FreeRTOS task for touch — runs independently of BLE blocking
+// Separate FreeRTOS task for touch — runs independently of BLE blocking.
+//
+// This task never draws. It only reads the touch controller and sets the
+// backlight; the screen it selects is stored in the scheduler and painted by
+// loop(), so there is exactly one writer on the SPI bus.
+//
+// A tap cycles: asleep -> schedule -> network -> asleep.
 void touchTask(void* param) {
     LGFX* disp = (LGFX*)param;
     bool backlightOn = true;
@@ -116,15 +122,18 @@ void touchTask(void* param) {
 
         if (touched && !wasTouched) {
             Serial.println("Touch: tap detected");
-            backlightOn = !backlightOn;
+            backlightOn = scheduler.consoleTap();
             disp->setBrightness(backlightOn ? 255 : 0);
             if (backlightOn) lastOnTime = millis();
         }
         wasTouched = touched;
 
+        // Auto-dim. The panel spends almost all its life here, which is the
+        // point — it should not be shining in the kitchen all night.
         if (backlightOn && millis() - lastOnTime > 60000) {
             disp->setBrightness(0);
             backlightOn = false;
+            scheduler.consoleSleep();
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
