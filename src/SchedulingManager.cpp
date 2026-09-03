@@ -5,6 +5,46 @@
 namespace {
 // Defined with the console helpers below; the tag renderer needs it first.
 String fitText(lgfx::LovyanGFX &g, const String &s, int maxW);
+
+// dd/mm/yyyy -> local midnight. 0 if unparseable.
+time_t parseDMY(const String &s) {
+  if (s.length() < 10) return 0;
+  struct tm t = {0};
+  t.tm_mday = s.substring(0, 2).toInt();
+  t.tm_mon = s.substring(3, 5).toInt() - 1;
+  t.tm_year = s.substring(6, 10).toInt() - 1900;
+  t.tm_hour = 12; // midday, so DST shifts cannot roll the date over
+  t.tm_isdst = -1;
+  return mktime(&t);
+}
+
+// How often a service repeats, from collectionSchedule:
+//   "FOOD5 Mon"     -> weekly
+//   "REC8 MonFort1" -> fortnightly
+// 0 when the field says nothing, in which case we only trust the one date
+// the council actually gave us.
+int cadenceFromSchedule(const String &sched) {
+  String s = sched;
+  s.toUpperCase();
+  if (s.length() == 0) return 0;
+  if (s.indexOf("FORT") >= 0) return 14;
+  const char *days[] = {"MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"};
+  for (int i = 0; i < 7; i++) {
+    if (s.indexOf(days[i]) >= 0) return 7;
+  }
+  return 0;
+}
+
+// The council only ever returns the NEXT date per service, so a weekly stream
+// would otherwise vanish from every repeat after the first.
+bool collectsOnDate(time_t serviceEpoch, int cadence, time_t targetEpoch) {
+  if (serviceEpoch == 0 || targetEpoch == 0) return false;
+  double diff = difftime(targetEpoch, serviceEpoch) / 86400.0;
+  int days = (int)(diff + (diff < 0 ? -0.5 : 0.5));
+  if (days == 0) return true;
+  if (days < 0 || cadence <= 0) return false;
+  return (days % cadence) == 0;
+}
 } // namespace
 
 SchedulingManager::SchedulingManager(CouncilClient *api, ZhsunycoMaster *ble,
@@ -629,6 +669,13 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   const int BODY_X = DATE_W + 12;
   const int BODY_W = W - BODY_X - 12;
 
+  // Footer sits on the bottom edge rather than floating. The update stamp
+  // shares its baseline so the two read as one line across the whole tag.
+  const int FOOT_TEXT_Y = H - 16;  // 112: 8px glyphs, 8px bottom margin
+  const int FOOT_RULE_Y = H - 22;  // 106
+  const int STREAM_TOP = 30;
+  const int STREAM_BOT = FOOT_RULE_Y - 2;
+
   // Previewing a specific collection: swap the target date in before anything
   // is derived, so the streams listed are the ones that really fall on it.
   if (previewDate.length() >= 10) {
@@ -706,16 +753,19 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   if (nextValid) {
     // The stamp is part of this stack, so the four elements are centred as
     // one group: 13 + 6 + 48 + 6 + 13 + 10 + 8 = 104 in 128, 12px each end.
+    // MON / 14 / SEP centred as a group above the stamp, with equal gaps:
+    // 13 + 6 + 48 + 6 + 13 = 86 in the 106px above the footer line, so 10px
+    // of air top and bottom.
     sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 12);
+    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 10);
 
     // Font6 is a clean 48px numeric face. Scaling a vector font 2x on a
     // 1-bit panel doubles every stroke and looks crude; this does not.
     sprite.setFont(&fonts::Font6);
-    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 31);
+    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 29);
 
     sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 85);
+    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 83);
   } else {
     sprite.setFont(&fonts::FreeSansBold9pt7b);
     sprite.drawString("NO", DATE_W / 2, 48);
@@ -742,7 +792,11 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
         String s = v["Service"].as<String>();
         s.toUpperCase();
         if (s.indexOf(binKeys[o]) < 0) continue;
-        if (firstDate(v["collectionDateString"]) != nextDate) break;
+        // Weekly streams recur, so match by cadence rather than by the single
+        // date the council happened to return.
+        if (!collectsOnDate(parseDMY(firstDate(v["collectionDateString"])),
+                            cadenceFromSchedule(v["collectionSchedule"].as<String>()),
+                            parseDMY(nextDate))) break;
 
         if (strcmp(binKeys[o], "RUBBISH") == 0)        names[n] = "RUBBISH";
         else if (strcmp(binKeys[o], "RECYCLING") == 0) names[n] = "RECYCLING";
@@ -770,15 +824,26 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     }
   }
 
-  sprite.setFont(&fonts::FreeSansBold12pt7b);
+  // Use the largest face every line genuinely fits in. "GARDEN WASTE" at
+  // 12pt overruns 172px and was being clipped to "GARDEN WA..".
   sprite.setTextColor(TFT_BLACK);
+  sprite.setFont(&fonts::FreeSansBold12pt7b);
+  int lineH = 17, lineStep = 23;
 
-  // Leading tightens as the list grows so the block stays between the action
-  // line and the footer rule at y=96.
-  int lineY, lineStep;
-  if (lineCount >= 3)      { lineY = 32; lineStep = 22; }
-  else if (lineCount == 2) { lineY = 44; lineStep = 24; }
-  else                     { lineY = 54; lineStep = 24; }
+  bool fits = true;
+  for (int i = 0; i < lineCount; i++) {
+    if (sprite.textWidth(lines[i]) > BODY_W) { fits = false; break; }
+  }
+  if (!fits) {
+    sprite.setFont(&fonts::FreeSansBold9pt7b);
+    lineH = 13;
+    lineStep = 18;
+  }
+
+  // Centre the block in the gap between the action line and the footer rule.
+  int blockH = (lineCount - 1) * lineStep + lineH;
+  int lineY = STREAM_TOP + (STREAM_BOT - STREAM_TOP - blockH) / 2;
+  if (lineY < STREAM_TOP) lineY = STREAM_TOP;
 
   for (int i = 0; i < lineCount; i++) {
     sprite.drawString(fitText(sprite, lines[i], BODY_W), BODY_X, lineY);
@@ -786,7 +851,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   }
 
   // --- footer: everything not going out that day ---
-  sprite.drawFastHLine(BODY_X, 96, BODY_W, TFT_BLACK);
+  sprite.drawFastHLine(BODY_X, FOOT_RULE_Y, BODY_W, TFT_BLACK);
 
   sprite.setFont(nullptr); // 6x8 default face — small, and crisp on e-ink
   sprite.setTextSize(1);
@@ -800,12 +865,14 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
       if (s.indexOf(binKeys[o]) < 0) continue;
 
       String d = firstDate(v["collectionDateString"]);
-      if (d == nextDate) break; // already named above
+      if (collectsOnDate(parseDMY(d),
+                         cadenceFromSchedule(v["collectionSchedule"].as<String>()),
+                         parseDMY(nextDate))) break; // already named above
 
       String entry = String(gridShort[o]) + " " + d.substring(0, 5);
       int entryW = entry.length() * 6;
       if (footX + entryW > W - 10) break; // never run off the edge
-      sprite.drawString(entry, footX, 102);
+      sprite.drawString(entry, footX, FOOT_TEXT_Y);
       footX += entryW + 10;
       break;
     }
@@ -820,7 +887,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
     sprite.setTextSize(1);
     sprite.setTextColor(TFT_WHITE);
     sprite.setTextDatum(top_center);
-    sprite.drawString(stamp, DATE_W / 2, 108);
+    sprite.drawString(stamp, DATE_W / 2, FOOT_TEXT_Y);
     sprite.setTextDatum(top_left);
   }
 
