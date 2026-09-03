@@ -724,16 +724,17 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   bool floodDate = (!hasError && daysAway == 1);
   bool redAction = (!hasError && daysAway == 2);
 
+  // "NEXT COLLECTION" at 15 characters exactly fills the 172px body, so that
+  // is the budget. "BINS OUT TOMORROW" is 17 and was running off the edge.
   String actionLine;
   if (hasError) {
-    actionLine = (errorState == SystemErrorState::NO_WIFI) ? "NO WIFI - LAST KNOWN"
-                                                           : "API ERROR - LAST KNOWN";
+    actionLine = (errorState == SystemErrorState::NO_WIFI) ? "NO WIFI" : "API ERROR";
   } else if (daysAway == 0) {
-    actionLine = "COLLECTION TODAY";
+    actionLine = "COLLECTION DAY";
   } else if (daysAway == 1) {
-    actionLine = "BINS OUT TONIGHT";
+    actionLine = "OUT TONIGHT";
   } else if (daysAway == 2) {
-    actionLine = "BINS OUT TOMORROW";
+    actionLine = "OUT TOMORROW";
   } else {
     actionLine = "NEXT COLLECTION";
   }
@@ -753,19 +754,22 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   if (nextValid) {
     // The stamp is part of this stack, so the four elements are centred as
     // one group: 13 + 6 + 48 + 6 + 13 + 10 + 8 = 104 in 128, 12px each end.
-    // MON / 14 / SEP centred as a group above the stamp, with equal gaps:
-    // 13 + 6 + 48 + 6 + 13 = 86 in the 106px above the footer line, so 10px
-    // of air top and bottom.
+    // Centre datum, not top: Font6's line box carries unused space below the
+    // digits, and anchoring by the top dumped all of it into the gap above
+    // SEP. Centring splits that padding evenly, so equal centre spacing
+    // gives equal visual gaps.
+    sprite.setTextDatum(middle_center);
+
     sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 10);
+    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 20);
 
     // Font6 is a clean 48px numeric face. Scaling a vector font 2x on a
     // 1-bit panel doubles every stroke and looks crude; this does not.
     sprite.setFont(&fonts::Font6);
-    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 29);
+    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 57);
 
     sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 83);
+    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 94);
   } else {
     sprite.setFont(&fonts::FreeSansBold9pt7b);
     sprite.drawString("NO", DATE_W / 2, 48);
@@ -776,7 +780,7 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   sprite.setTextDatum(top_left);
   sprite.setTextColor(redAction || hasError ? TFT_RED : TFT_BLACK);
   sprite.setFont(&fonts::FreeSansBold9pt7b);
-  sprite.drawString(actionLine, BODY_X, 12);
+  sprite.drawString(fitText(sprite, actionLine, BODY_W), BODY_X, 12);
 
   // --- the streams going out that day ---
   // Two lines at most. Three or four streams collapse onto a shared line
@@ -1372,9 +1376,9 @@ void SchedulingManager::_drawConsoleSchedule(lgfx::LovyanGFX &g,
   bool redAction = (diff == 2);
 
   const char *action;
-  if (diff == 0)      action = "COLLECTION TODAY";
-  else if (diff == 1) action = "BINS OUT TONIGHT";
-  else if (diff == 2) action = "BINS OUT TOMORROW";
+  if (diff == 0)      action = "COLLECTION DAY";
+  else if (diff == 1) action = "OUT TONIGHT";
+  else if (diff == 2) action = "OUT TOMORROW";
   else                action = "NEXT COLLECTION";
 
   // --- date block ---
@@ -1388,18 +1392,19 @@ void SchedulingManager::_drawConsoleSchedule(lgfx::LovyanGFX &g,
   // Stack of three, optically centred in the 144px column:
   // 13 + 7 + 48 + 7 + 13 = 88, so 28px of air above and below.
   int dateMid = DATE_W / 2;
-  g.setTextDatum(top_center);
+  g.setTextDatum(middle_center);
   g.setFont(&fonts::FreeSansBold9pt7b);
-  g.drawString(DOW3[nextTm.tm_wday], dateMid, 28);
+  g.drawString(DOW3[nextTm.tm_wday], dateMid, 34);
 
   // Font6 is a native 48px numeric face. Scaling FreeSansBold24pt to 2x got
   // the size but doubled every stroke and stair-stepped the curves — it read
   // as chunky rather than bold.
   g.setFont(&fonts::Font6);
-  g.drawString(String(nextTm.tm_mday), dateMid, 48);
+  g.drawString(String(nextTm.tm_mday), dateMid, 72);
 
   g.setFont(&fonts::FreeSansBold9pt7b);
-  g.drawString(MON3[nextTm.tm_mon], dateMid, 103);
+  g.drawString(MON3[nextTm.tm_mon], dateMid, 110);
+  g.setTextDatum(top_left);
 
   // --- action line ---
   // The widest string here is "BINS OUT TOMORROW". Measure it rather than

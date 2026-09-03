@@ -282,9 +282,9 @@ function stateForDay(day) {
         next: day,
         due: due,
         later: later,
-        tagAct: diff === 0 ? 'COLLECTION TODAY'
-            : diff === 1 ? 'BINS OUT TONIGHT'
-            : diff === 2 ? 'BINS OUT TOMORROW' : 'NEXT COLLECTION',
+        tagAct: diff === 0 ? 'COLLECTION DAY'
+            : diff === 1 ? 'OUT TONIGHT'
+            : diff === 2 ? 'OUT TOMORROW' : 'NEXT COLLECTION',
         tearRed: diff === 1,
         actRed: diff === 2
     };
@@ -310,19 +310,19 @@ function currentState() {
         chip = 'Today';
         action = 'Collection today';
         note = 'Crews started at 6:00 am';
-        tagAct = 'COLLECTION TODAY';
+        tagAct = 'COLLECTION DAY';
     } else if (diff === 1) {
         chip = 'Tomorrow';
         action = 'Bins out tonight';
         note = 'Crews start at 6:00 am tomorrow';
-        tagAct = 'BINS OUT TONIGHT';
+        tagAct = 'OUT TONIGHT';
         tearRed = true;
         calm = false;
     } else if (diff === 2) {
         chip = 'In 2 days';
         action = 'Bins out tomorrow';
         note = joinList(due.map(s => s.def.name)) + ' together';
-        tagAct = 'BINS OUT TOMORROW';
+        tagAct = 'OUT TOMORROW';
         actRed = true;
         calm = false;
     } else {
@@ -560,9 +560,9 @@ function frameFor(type, mac, stamp) {
         const fake = Object.assign({}, st, {
             next: shown,
             diff: offset,
-            tagAct: offset === 0 ? 'COLLECTION TODAY'
-                : offset === 1 ? 'BINS OUT TONIGHT'
-                : offset === 2 ? 'BINS OUT TOMORROW' : 'NEXT COLLECTION',
+            tagAct: offset === 0 ? 'COLLECTION DAY'
+                : offset === 1 ? 'OUT TONIGHT'
+                : offset === 2 ? 'OUT TOMORROW' : 'NEXT COLLECTION',
             tearRed: offset === 1,
             actRed: offset === 2
         });
@@ -580,10 +580,10 @@ function frameFor(type, mac, stamp) {
     }
 
     if (type === 'wifi') {
-        return { cls: 'tag', html: renderTagInner(st, 'NO WIFI - LAST KNOWN', true, stamp) };
+        return { cls: 'tag', html: renderTagInner(st, 'NO WIFI', true, stamp) };
     }
     if (type === 'api') {
-        return { cls: 'tag', html: renderTagInner(st, 'API ERROR - LAST KNOWN', true, stamp) };
+        return { cls: 'tag', html: renderTagInner(st, 'API ERROR', true, stamp) };
     }
     return { cls: 'tag', html: renderTagInner(st, null, false, stamp) };
 }
