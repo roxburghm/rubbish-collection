@@ -671,9 +671,11 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
 
   // Footer sits on the bottom edge rather than floating. The update stamp
   // shares its baseline so the two read as one line across the whole tag.
+  const int HEAD_TEXT_Y = 10;      // 8px glyphs
+  const int HEAD_RULE_Y = 23;
   const int FOOT_TEXT_Y = H - 16;  // 112: 8px glyphs, 8px bottom margin
   const int FOOT_RULE_Y = H - 22;  // 106
-  const int STREAM_TOP = 30;
+  const int STREAM_TOP = HEAD_RULE_Y + 5;
   const int STREAM_BOT = FOOT_RULE_Y - 2;
 
   // Previewing a specific collection: swap the target date in before anything
@@ -724,17 +726,18 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   bool floodDate = (!hasError && daysAway == 1);
   bool redAction = (!hasError && daysAway == 2);
 
-  // "NEXT COLLECTION" at 15 characters exactly fills the 172px body, so that
-  // is the budget. "BINS OUT TOMORROW" is 17 and was running off the edge.
+  // At 6px/char the header has room for the full wording again: 17 characters
+  // is ~102px against a 172px body.
   String actionLine;
   if (hasError) {
-    actionLine = (errorState == SystemErrorState::NO_WIFI) ? "NO WIFI" : "API ERROR";
+    actionLine = (errorState == SystemErrorState::NO_WIFI) ? "NO WIFI - LAST KNOWN"
+                                                           : "API ERROR - LAST KNOWN";
   } else if (daysAway == 0) {
-    actionLine = "COLLECTION DAY";
+    actionLine = "COLLECTION TODAY";
   } else if (daysAway == 1) {
-    actionLine = "OUT TONIGHT";
+    actionLine = "BINS OUT TONIGHT";
   } else if (daysAway == 2) {
-    actionLine = "OUT TOMORROW";
+    actionLine = "BINS OUT TOMORROW";
   } else {
     actionLine = "NEXT COLLECTION";
   }
@@ -746,7 +749,8 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   const char *gridShort[] = {"RUBBISH", "RECYCLE", "FOOD", "GARDEN"};
 
   // --- date block ---
-  sprite.fillRect(0, 0, DATE_W, H, floodDate ? TFT_RED : TFT_BLACK);
+  uint16_t dateBg = floodDate ? TFT_RED : TFT_BLACK;
+  sprite.fillRect(0, 0, DATE_W, H, dateBg);
   sprite.setTextColor(TFT_WHITE);
   sprite.setTextSize(1);
   sprite.setTextDatum(top_center);
@@ -754,22 +758,50 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   if (nextValid) {
     // The stamp is part of this stack, so the four elements are centred as
     // one group: 13 + 6 + 48 + 6 + 13 + 10 + 8 = 104 in 128, 12px each end.
-    // Centre datum, not top: Font6's line box carries unused space below the
-    // digits, and anchoring by the top dumped all of it into the gap above
-    // SEP. Centring splits that padding evenly, so equal centre spacing
-    // gives equal visual gaps.
-    sprite.setTextDatum(middle_center);
+    // Font6's line box carries uneven padding around the digits, so neither
+    // the top nor the centre datum gives even gaps — anchoring by centre
+    // still left more air under the numeral than over it. Draw it, measure
+    // where the ink actually landed, then hang MON and SEP off that. Font
+    // agnostic, and self-correcting if the face ever changes.
+    const int GAP = 9;
+    const int LBL_H = 13;               // 9pt cap height
+    const int STACK_BOT = FOOT_RULE_Y;  // the stamp lives below this
 
-    sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2, 20);
+    String dayStr = String(nextTm.tm_mday);
+    int nominal = STACK_BOT / 2;
 
     // Font6 is a clean 48px numeric face. Scaling a vector font 2x on a
     // 1-bit panel doubles every stroke and looks crude; this does not.
+    sprite.setTextDatum(middle_center);
     sprite.setFont(&fonts::Font6);
-    sprite.drawString(String(nextTm.tm_mday), DATE_W / 2, 57);
+    sprite.drawString(dayStr, DATE_W / 2, nominal);
 
-    sprite.setFont(&fonts::FreeSansBold9pt7b);
-    sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2, 94);
+    int inkTop = -1, inkBot = -1;
+    for (int y = 0; y < STACK_BOT; y++) {
+      for (int x = 0; x < DATE_W; x++) {
+        if (sprite.readPixel(x, y) != dateBg) {
+          if (inkTop < 0) inkTop = y;
+          inkBot = y;
+          break;
+        }
+      }
+    }
+
+    if (inkTop >= 0) {
+      int inkH = inkBot - inkTop + 1;
+      int groupH = LBL_H + GAP + inkH + GAP + LBL_H;
+      int wantInkTop = (STACK_BOT - groupH) / 2 + LBL_H + GAP;
+
+      sprite.fillRect(0, 0, DATE_W, H, dateBg);
+      sprite.setFont(&fonts::Font6);
+      sprite.drawString(dayStr, DATE_W / 2, nominal + (wantInkTop - inkTop));
+
+      sprite.setFont(&fonts::FreeSansBold9pt7b);
+      sprite.drawString(DOW3[nextTm.tm_wday], DATE_W / 2,
+                        wantInkTop - GAP - LBL_H / 2);
+      sprite.drawString(MON3[nextTm.tm_mon], DATE_W / 2,
+                        wantInkTop + inkH + GAP + LBL_H / 2);
+    }
   } else {
     sprite.setFont(&fonts::FreeSansBold9pt7b);
     sprite.drawString("NO", DATE_W / 2, 48);
@@ -777,10 +809,15 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
   }
 
   // --- action line ---
+  // Small caps over a rule, matching the footer. The stream names carry the
+  // message; this line only says which kind of day it is.
   sprite.setTextDatum(top_left);
   sprite.setTextColor(redAction || hasError ? TFT_RED : TFT_BLACK);
-  sprite.setFont(&fonts::FreeSansBold9pt7b);
-  sprite.drawString(fitText(sprite, actionLine, BODY_W), BODY_X, 12);
+  sprite.setFont(nullptr);
+  sprite.setTextSize(1);
+  sprite.drawString(fitText(sprite, actionLine, BODY_W), BODY_X, HEAD_TEXT_Y);
+  sprite.drawFastHLine(BODY_X, HEAD_RULE_Y, BODY_W,
+                       redAction || hasError ? TFT_RED : TFT_BLACK);
 
   // --- the streams going out that day ---
   // Two lines at most. Three or four streams collapse onto a shared line
