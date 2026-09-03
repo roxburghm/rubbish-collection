@@ -550,7 +550,8 @@ void SchedulingManager::_generateAndSendImage(JsonDocument &data,
       sprite.fillCircle(cx, cy + 15, 2, TFT_WHITE);
       sprite.fillRoundRect(cx - 2, cy - 18, 5, 25, 2, TFT_WHITE);
     }
-
+  } else {
+    // Normal operation: show timestamp
     sprite.fillRect(0, 0, sideBarW, H, TFT_WHITE);
     sprite.drawFastVLine(sideBarW, 0, H, TFT_BLACK);
 
