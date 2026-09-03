@@ -22,6 +22,28 @@ void WebServerHandler::begin() {
 }
 
 void WebServerHandler::_setupRoutes() {
+  // Vendored assets, declared before the catch-all static handler.
+  // Both need an explicit content type — ESPAsyncWebServer does not know
+  // woff2 — and both are immutable, so they get a long cache rather than
+  // being re-fetched from flash on every page load.
+  _server.on("/archivo.woff2", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *res =
+        request->beginResponse(LittleFS, "/archivo.woff2", "font/woff2");
+    res->addHeader("Cache-Control", "max-age=31536000, immutable");
+    request->send(res);
+  });
+
+  // Stored gzipped: 375KB of scanner becomes 108KB of flash, and the browser
+  // inflates it.
+  _server.on("/html5-qrcode.min.js", HTTP_GET,
+             [](AsyncWebServerRequest *request) {
+               AsyncWebServerResponse *res = request->beginResponse(
+                   LittleFS, "/html5-qrcode.min.js.gz", "text/javascript");
+               res->addHeader("Content-Encoding", "gzip");
+               res->addHeader("Cache-Control", "max-age=31536000, immutable");
+               request->send(res);
+             });
+
   // Serve Static Files
   _server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
   _server.serveStatic("/update", LittleFS, "/update.html");

@@ -5,11 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rubbish Console</title>
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
-    <!-- Scanner is optional: the page works without it, and it cannot load
-         during AP-mode setup when the device has no route to the internet. -->
-    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    <!-- Served from the device, gzipped: pairing happens in AP mode, where
+         unpkg is unreachable and the scan button used to be dead. -->
+    <script src="/html5-qrcode.min.js" defer></script>
 </head>
 
 <body>
@@ -178,7 +178,7 @@
 
     </div>
 
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=9"></script>
 </body>
 
 </html>

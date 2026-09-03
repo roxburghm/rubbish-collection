@@ -3,10 +3,19 @@
    choices, so it sets the rules: paper, ink, and red for the one thing that
    needs doing. The web and the LCD follow it. */
 
+/* Archivo is served from the device, not a CDN: in AP mode — which is
+   exactly when you are setting the thing up — there is no route to the
+   internet, and a Google Fonts link would block first paint before silently
+   falling back. One variable file covers 500-700, latin subset, 35KB. */
+@font-face {
+    font-family: 'Archivo';
+    src: url('/archivo.woff2') format('woff2');
+    font-weight: 500 700;
+    font-stretch: 100%;
+    font-display: swap;
+}
+
 :root {
-    /* Archivo carries the design but must not be fetched from a CDN — the
-       device serves this page in AP mode with no internet. Drop an
-       archivo.woff2 into data/ and uncomment the @font-face to upgrade. */
     --font-display: 'Archivo', 'Segoe UI', system-ui, sans-serif;
     --font-body: 'Segoe UI', system-ui, -apple-system, sans-serif;
     --font-mono: ui-monospace, 'Cascadia Mono', 'Consolas', monospace;
@@ -56,13 +65,6 @@
     --r-sm: 3px;
     --r-md: 5px;
 }
-
-/* @font-face {
-    font-family: 'Archivo';
-    src: url('/archivo.woff2') format('woff2');
-    font-weight: 500 700;
-    font-display: swap;
-} */
 
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
